@@ -522,9 +522,9 @@ function ReadinessHeader({ analysis }: { analysis: Analysis | null }) {
   );
 }
 
-function FocusedPanel({ kicker, title, children }: { kicker: string; title: string; children: ReactNode }) {
+function FocusedPanel({ kicker, title, children, className = "" }: { kicker: string; title: string; children: ReactNode; className?: string }) {
   return (
-    <div className="panel focused-panel">
+    <div className={`panel focused-panel ${className}`}>
       <div className="panel-heading">
         <span className="panel-kicker">{kicker}</span>
         <h2>{title}</h2>
@@ -574,6 +574,9 @@ function AnalysisReport({ analysis, onNavigate }: { analysis: Analysis | null; o
       <FocusedPanel kicker="Promotion decision" title={analysis.promotionDecision?.title ?? "Release decision"}>
         <PromotionDecision analysis={analysis} />
       </FocusedPanel>
+      <FocusedPanel kicker="Release actions" title="Next gated work">
+        <ReleaseActionQueue analysis={analysis} onNavigate={onNavigate} />
+      </FocusedPanel>
       <FocusedPanel kicker="Readiness report" title="Export decision summary">
         <ReadinessReport analysis={analysis} />
       </FocusedPanel>
@@ -592,6 +595,86 @@ function AnalysisReport({ analysis, onNavigate }: { analysis: Analysis | null; o
       </FocusedPanel>
     </div>
   );
+}
+
+function ReleaseActionQueue({ analysis, onNavigate }: { analysis: Analysis; onNavigate: (step: WorkflowStep) => void }) {
+  const actions = buildReleaseActions(analysis);
+
+  return (
+    <div className="action-queue">
+      {actions.map((action) => (
+        <div className="action-item" key={`${action.title}-${action.stage}`}>
+          <div>
+            <strong>{action.title}</strong>
+            <span>{action.detail}</span>
+          </div>
+          <button className="ghost-button" type="button" onClick={() => onNavigate(action.stage)}>
+            Open {stageLabel(action.stage)}
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function buildReleaseActions(analysis: Analysis) {
+  const actions: Array<{ title: string; detail: string; stage: WorkflowStep }> = [];
+  const failedRules = analysis.validations.filter((rule) => rule.status === "failed");
+  const warningRules = analysis.validations.filter((rule) => rule.status === "warning");
+  const missingGeneratedInputs = analysis.generatedFiles.filter((file) => file.status === "needs-input");
+
+  failedRules.forEach((rule) => {
+    actions.push({
+      title: `Fix ${rule.name}`,
+      detail: rule.message,
+      stage: stageForValidation(rule.name)
+    });
+  });
+
+  if (analysis.promotionDecision?.status === "blocked" && !failedRules.length) {
+    actions.push({
+      title: "Raise readiness threshold",
+      detail: analysis.promotionDecision.message,
+      stage: "validate"
+    });
+  }
+
+  if (missingGeneratedInputs.length) {
+    actions.push({
+      title: "Resolve generated config inputs",
+      detail: `${missingGeneratedInputs.length} file${missingGeneratedInputs.length === 1 ? "" : "s"} still need deployment values before sandbox checks.`,
+      stage: "validate"
+    });
+  }
+
+  warningRules.slice(0, 3).forEach((rule) => {
+    actions.push({
+      title: `Review ${rule.name}`,
+      detail: rule.message,
+      stage: stageForValidation(rule.name)
+    });
+  });
+
+  if (!actions.length) {
+    actions.push({
+      title: "Run executable validation gates",
+      detail: "Continue with sandbox checks, runtime dry-runs, and security gates before cloud deployment.",
+      stage: "validate"
+    });
+  }
+
+  return actions.slice(0, 5);
+}
+
+function stageForValidation(name: string): WorkflowStep {
+  if (name.includes("Package") || name.includes("Build") || name.includes("Start") || name.includes("Test")) return "source";
+  if (name.includes("Dockerfile") || name.includes("Ignore")) return "generate";
+  if (name.includes("Secrets")) return "validate";
+  return "validate";
+}
+
+function stageLabel(stage: WorkflowStep) {
+  return stage.charAt(0).toUpperCase() + stage.slice(1);
 }
 
 function ScoreExplanation({ analysis }: { analysis: Analysis }) {
@@ -1041,7 +1124,7 @@ function ValidationView({
           ))}
         </div>
       </FocusedPanel>
-      <FocusedPanel kicker="Sandbox validation" title="Generated config execution check">
+      <FocusedPanel kicker="Sandbox validation" title="Generated config execution check" className="wide-panel">
         <RuntimeToolchainPanel isLoading={isToolchainLoading} onInspect={onInspectToolchain} toolchain={runtimeToolchain} />
         <div className="validation-input-card">
           <div className="validation-input-heading">
@@ -1340,7 +1423,7 @@ function PipelineView({
         </div>
         <PipelineList analysis={analysis} />
       </FocusedPanel>
-      <FocusedPanel kicker="Pipeline preview" title={pipelineFile?.path ?? "Pipeline file"}>
+      <FocusedPanel kicker="Pipeline preview" title={pipelineFile?.path ?? "Pipeline file"} className="wide-panel">
         {pipelineFile ? (
           <div className="generated-list">
             <details open>
@@ -1403,7 +1486,7 @@ function InfraView({
         <p>{plan.summary}</p>
         <ResourceList plan={plan} />
       </FocusedPanel>
-      <FocusedPanel kicker="Terraform preview" title={`${cloudProvider.toUpperCase()} starter files`}>
+      <FocusedPanel kicker="Terraform preview" title={`${cloudProvider.toUpperCase()} starter files`} className="wide-panel">
         <GeneratedInfraFiles plan={plan} />
       </FocusedPanel>
     </div>
