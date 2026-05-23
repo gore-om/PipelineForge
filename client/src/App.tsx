@@ -1835,7 +1835,10 @@ function defaultDeploymentInputs(analysis: Analysis): DeploymentInputs {
     startCommand: stack.startCommand ?? "",
     testCommand: stack.testCommand ?? "",
     imageRegistry: "",
-    domain: ""
+    domain: "",
+    databaseUrl: "",
+    tokenSecret: "",
+    corsOrigin: ""
   };
 }
 
@@ -1869,15 +1872,15 @@ function applyDeploymentInputs(file: GeneratedFile, inputs: DeploymentInputs) {
     content = content.replaceAll("REPLACE_WITH_DOMAIN", domain);
   }
 
-  if (inputs.databaseUrl.trim()) {
+  if (inputs.databaseUrl?.trim()) {
     content = content.replaceAll("REPLACE_WITH_DATABASE_URL", inputs.databaseUrl.trim());
   }
 
-  if (inputs.tokenSecret.trim()) {
+  if (inputs.tokenSecret?.trim()) {
     content = content.replaceAll("REPLACE_WITH_TOKEN_SECRET", inputs.tokenSecret.trim());
   }
 
-  if (inputs.corsOrigin.trim()) {
+  if (inputs.corsOrigin?.trim()) {
     content = content.replaceAll("REPLACE_WITH_CORS_ORIGIN", inputs.corsOrigin.trim());
   }
 
@@ -1919,9 +1922,9 @@ function resolveFileStatus(file: GeneratedFile, inputs: DeploymentInputs, analys
   const hasStart = Boolean(inputs.startCommand.trim());
   const hasRegistry = Boolean(inputs.imageRegistry.trim());
   const hasDomain = Boolean(inputs.domain.trim());
-  const hasDatabaseUrl = Boolean(inputs.databaseUrl.trim());
-  const hasTokenSecret = Boolean(inputs.tokenSecret.trim());
-  const hasCorsOrigin = Boolean(inputs.corsOrigin.trim());
+  const hasDatabaseUrl = Boolean(inputs.databaseUrl?.trim());
+  const hasTokenSecret = Boolean(inputs.tokenSecret?.trim());
+  const hasCorsOrigin = Boolean(inputs.corsOrigin?.trim());
   const isMultiService = Boolean(analysis.stack.services?.length && analysis.stack.services.length > 1);
 
   if (file.path.toLowerCase().endsWith("dockerfile")) return hasPackageManifest || isMultiService || (hasPort && hasStart) ? "ready" : file.status;
