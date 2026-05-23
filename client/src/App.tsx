@@ -988,7 +988,7 @@ function GenerationView({
   const needsInputCount = generatedFiles.filter((file) => file.status === "needs-input").length;
 
   return (
-    <div className="results-grid">
+    <div className="results-grid paired-grid">
       <FocusedPanel kicker="Generated configs" title="Preview and export">
         <div className="resolution-summary">
           <Metric icon={<CheckCircle2 size={20} />} label="Ready files" value={`${readyCount}/${generatedFiles.length}`} />
@@ -1107,7 +1107,7 @@ function ValidationView({
   const readyCount = generatedFiles.length - unresolvedCount;
 
   return (
-    <div className="results-grid">
+    <div className="results-grid paired-grid">
       <FocusedPanel kicker="Validation engine" title="Rule outcomes">
         <RuleList analysis={analysis} />
       </FocusedPanel>
@@ -1411,7 +1411,7 @@ function PipelineView({
   const pipelineFile = analysis?.generatedFiles.find((file) => file.path === (ciProvider === "azure-pipelines" ? "azure-pipelines.yml" : "Jenkinsfile"));
 
   return (
-    <div className="results-grid">
+    <div className="results-grid paired-grid">
       <FocusedPanel kicker="CI/CD provider" title="Pipeline target">
         <div className="mode-switch cloud-switch" role="tablist" aria-label="CI/CD provider">
           <button className={ciProvider === "azure-pipelines" ? "active" : ""} onClick={() => onCiProviderChange("azure-pipelines")} type="button">
@@ -1423,7 +1423,7 @@ function PipelineView({
         </div>
         <PipelineList analysis={analysis} />
       </FocusedPanel>
-      <FocusedPanel kicker="Pipeline preview" title={pipelineFile?.path ?? "Pipeline file"} className="wide-panel">
+      <FocusedPanel kicker="Pipeline preview" title={pipelineFile?.path ?? "Pipeline file"}>
         {pipelineFile ? (
           <div className="generated-list">
             <details open>
@@ -1454,7 +1454,50 @@ function PipelineView({
           <Metric icon={<Cloud size={20} />} label="Cloud apply" value="Locked" />
           <Metric icon={<LockKeyhole size={20} />} label="Drift detection" value="Later" />
         </div>
+        <PromotionRunbook analysis={analysis} ciProvider={ciProvider} />
       </FocusedPanel>
+    </div>
+  );
+}
+
+function PromotionRunbook({ analysis, ciProvider }: { analysis: Analysis | null; ciProvider: "azure-pipelines" | "jenkins" }) {
+  if (!analysis) return null;
+
+  const unresolvedFiles = analysis.generatedFiles.filter((file) => file.status !== "ready");
+  const runbook = [
+    {
+      title: "Pipeline provider",
+      status: "passed" as RuleStatus,
+      detail: ciProvider === "azure-pipelines" ? "Azure Pipelines selected for this app release." : "Jenkins selected as the pipeline target."
+    },
+    {
+      title: "Preflight decision",
+      status: analysis.preflight.status === "ready" ? "passed" as RuleStatus : "failed" as RuleStatus,
+      detail: analysis.preflight.status === "ready" ? "Preflight gates are ready for sandbox execution." : "Resolve blocked preflight gates before release."
+    },
+    {
+      title: "Generated config inputs",
+      status: unresolvedFiles.length ? "warning" as RuleStatus : "passed" as RuleStatus,
+      detail: unresolvedFiles.length ? `${unresolvedFiles.length} generated file${unresolvedFiles.length === 1 ? "" : "s"} still need input.` : "Generated files are resolved for the selected stack."
+    },
+    {
+      title: "Cloud deployment lock",
+      status: "warning" as RuleStatus,
+      detail: "Cloud apply stays locked until sandbox, security, credentials, and Terraform review pass."
+    }
+  ];
+
+  return (
+    <div className="runbook-list">
+      {runbook.map((item) => (
+        <div className="runbook-item" key={item.title}>
+          {statusIcon(item.status)}
+          <div>
+            <strong>{item.title}</strong>
+            <span>{item.detail}</span>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -1473,7 +1516,7 @@ function InfraView({
   const plan = analysis.infraPlan[cloudProvider];
 
   return (
-    <div className="results-grid">
+    <div className="results-grid paired-grid">
       <FocusedPanel kicker="Infrastructure planner" title="Choose cloud target">
         <div className="mode-switch cloud-switch" role="tablist" aria-label="Cloud provider">
           <button className={cloudProvider === "azure" ? "active" : ""} onClick={() => onCloudProviderChange("azure")} type="button">
@@ -1486,7 +1529,7 @@ function InfraView({
         <p>{plan.summary}</p>
         <ResourceList plan={plan} />
       </FocusedPanel>
-      <FocusedPanel kicker="Terraform preview" title={`${cloudProvider.toUpperCase()} starter files`} className="wide-panel">
+      <FocusedPanel kicker="Terraform preview" title={`${cloudProvider.toUpperCase()} starter files`}>
         <GeneratedInfraFiles plan={plan} />
       </FocusedPanel>
     </div>
