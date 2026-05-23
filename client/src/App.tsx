@@ -1125,51 +1125,63 @@ function ValidationView({
         </div>
       </FocusedPanel>
       <FocusedPanel kicker="Sandbox validation" title="Generated config execution check" className="wide-panel">
-        <RuntimeToolchainPanel isLoading={isToolchainLoading} onInspect={onInspectToolchain} toolchain={runtimeToolchain} />
-        <div className="validation-input-card">
-          <div className="validation-input-heading">
-            <div>
-              <strong>Required deployment inputs</strong>
-              <span>Complete these values here, then run sandbox checks without leaving Validate.</span>
+        <div className="validation-command-grid">
+          <div className="validation-stack">
+            <RuntimeToolchainPanel isLoading={isToolchainLoading} onInspect={onInspectToolchain} toolchain={runtimeToolchain} />
+            <div className="validation-input-card">
+              <div className="validation-input-heading">
+                <div>
+                  <strong>Required deployment inputs</strong>
+                  <span>Complete these values here, then run sandbox checks without leaving Validate.</span>
+                </div>
+                <em className={`review-badge ${unresolvedCount ? "needs-input" : "ready"}`}>
+                  {readyCount}/{generatedFiles.length} ready
+                </em>
+              </div>
+              <DeploymentInputsPanel analysis={analysis} inputs={deploymentInputs} onChange={onDeploymentInputsChange} />
             </div>
-            <em className={`review-badge ${unresolvedCount ? "needs-input" : "ready"}`}>
-              {readyCount}/{generatedFiles.length} ready
-            </em>
+            {unresolvedCount ? <MissingGeneratedInputs files={unresolvedFiles} /> : null}
           </div>
-          <DeploymentInputsPanel analysis={analysis} inputs={deploymentInputs} onChange={onDeploymentInputsChange} />
-        </div>
-        <div className="sandbox-actions">
-          <div>
-            <p>
-              Run deterministic checks against the resolved generated files before Docker or cloud execution is allowed.
-            </p>
-            <span>{unresolvedCount ? `${unresolvedCount} generated files still need input.` : "All generated files are ready for sandbox checks."}</span>
+          <div className="validation-stack">
+            <div className="sandbox-actions">
+              <div>
+                <p>
+                  Run deterministic checks against the resolved generated files before Docker or cloud execution is allowed.
+                </p>
+                <span>{unresolvedCount ? `${unresolvedCount} generated files still need input.` : "All generated files are ready for sandbox checks."}</span>
+              </div>
+              <button className="primary-button" type="button" disabled={isSandboxLoading || unresolvedCount > 0} onClick={onRunSandbox}>
+                <Play size={17} />
+                {isSandboxLoading ? "Running..." : "Run sandbox checks"}
+              </button>
+            </div>
+            <SandboxResultView result={sandboxResult} />
+            <RuntimeDryRunPanel
+              disabled={isRuntimeLoading || unresolvedCount > 0 || !sandboxResult || sandboxResult.status === "blocked"}
+              disabledReason={validationGateReason(unresolvedCount, sandboxResult)}
+              isLoading={isRuntimeLoading}
+              onRun={onRunRuntime}
+              result={runtimeResult}
+            />
+            <SecurityGatePanel
+              autoFixResult={autoFixResult}
+              disabled={isSecurityLoading || unresolvedCount > 0 || !sandboxResult || sandboxResult.status === "blocked"}
+              disabledReason={validationGateReason(unresolvedCount, sandboxResult)}
+              isAutoFixLoading={isAutoFixLoading}
+              isLoading={isSecurityLoading}
+              onApplyAutoFixes={onApplyAutoFixes}
+              onPreviewAutoFixes={onPreviewAutoFixes}
+              onRun={onRunSecurity}
+              result={securityResult}
+            />
+            <ValidationEvidenceBundle
+              generatedFiles={generatedFiles}
+              runtimeResult={runtimeResult}
+              sandboxResult={sandboxResult}
+              securityResult={securityResult}
+            />
           </div>
-          <button className="primary-button" type="button" disabled={isSandboxLoading || unresolvedCount > 0} onClick={onRunSandbox}>
-            <Play size={17} />
-            {isSandboxLoading ? "Running..." : "Run sandbox checks"}
-          </button>
         </div>
-        {unresolvedCount ? <MissingGeneratedInputs files={unresolvedFiles} /> : null}
-        <SandboxResultView result={sandboxResult} />
-        <RuntimeDryRunPanel
-          disabled={isRuntimeLoading || unresolvedCount > 0 || !sandboxResult || sandboxResult.status === "blocked"}
-          disabledReason={validationGateReason(unresolvedCount, sandboxResult)}
-          isLoading={isRuntimeLoading}
-          onRun={onRunRuntime}
-          result={runtimeResult}
-        />
-        <SecurityGatePanel
-          autoFixResult={autoFixResult}
-          disabled={isSecurityLoading || unresolvedCount > 0 || !sandboxResult || sandboxResult.status === "blocked"}
-          disabledReason={validationGateReason(unresolvedCount, sandboxResult)}
-          isAutoFixLoading={isAutoFixLoading}
-          isLoading={isSecurityLoading}
-          onApplyAutoFixes={onApplyAutoFixes}
-          onPreviewAutoFixes={onPreviewAutoFixes}
-          onRun={onRunSecurity}
-          result={securityResult}
-        />
       </FocusedPanel>
     </div>
   );
@@ -1180,6 +1192,50 @@ function validationGateReason(unresolvedCount: number, sandboxResult: SandboxRes
   if (!sandboxResult) return "Run sandbox checks first.";
   if (sandboxResult.status === "blocked") return "Fix blocked sandbox checks first.";
   return null;
+}
+
+function ValidationEvidenceBundle({
+  generatedFiles,
+  runtimeResult,
+  sandboxResult,
+  securityResult
+}: {
+  generatedFiles: GeneratedFile[];
+  runtimeResult: SandboxResult | null;
+  sandboxResult: SandboxResult | null;
+  securityResult: SandboxResult | null;
+}) {
+  const unresolvedCount = generatedFiles.filter((file) => file.status !== "ready").length;
+  const items = [
+    evidenceItem("Config resolution", unresolvedCount ? "warning" : "passed", unresolvedCount ? `${unresolvedCount} files need input.` : "All generated files are resolved."),
+    evidenceItem("Sandbox checks", sandboxResult?.status === "ready" ? "passed" : sandboxResult?.status === "blocked" ? "failed" : "warning", sandboxResult ? `${sandboxResult.summary.passed} passed, ${sandboxResult.summary.failed} failed.` : "Static sandbox checks are pending."),
+    evidenceItem("Runtime dry-runs", runtimeResult?.status === "ready" ? "passed" : runtimeResult?.status === "blocked" ? "failed" : "warning", runtimeResult ? `${runtimeResult.summary.passed} passed, ${runtimeResult.summary.skipped} skipped.` : "Runtime dry-runs are pending."),
+    evidenceItem("Security gates", securityResult?.status === "ready" ? "passed" : securityResult?.status === "blocked" ? "failed" : "warning", securityResult ? `${securityResult.summary.passed} passed, ${securityResult.summary.warning} warnings.` : "Security gate evidence is pending.")
+  ];
+
+  return (
+    <div className="evidence-bundle">
+      <div>
+        <strong>Validation evidence bundle</strong>
+        <span>Release proof collected before cloud deployment unlocks.</span>
+      </div>
+      <div className="evidence-list">
+        {items.map((item) => (
+          <div key={item.name}>
+            {statusIcon(item.status)}
+            <div>
+              <strong>{item.name}</strong>
+              <span>{item.detail}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function evidenceItem(name: string, status: RuleStatus, detail: string) {
+  return { name, status, detail };
 }
 
 function SecurityGatePanel({
@@ -1447,7 +1503,7 @@ function PipelineView({
           <p>No pipeline file generated yet.</p>
         )}
       </FocusedPanel>
-      <FocusedPanel kicker="Release controls" title="Execution gates">
+      <FocusedPanel kicker="Release controls" title="Execution gates" className="right-column-panel">
         <div className="metrics-strip nested">
           <Metric icon={<ShieldCheck size={20} />} label="Preflight" value={analysis?.preflight.status ?? "Pending"} />
           <Metric icon={<Rocket size={20} />} label="Sandbox deploy" value="Next" />

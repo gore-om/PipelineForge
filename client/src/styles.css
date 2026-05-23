@@ -529,6 +529,10 @@ code {
   margin: 0;
 }
 
+.right-column-panel {
+  grid-column: 2;
+}
+
 .detail-list,
 .rule-list,
 .template-list,
@@ -759,6 +763,57 @@ code {
   white-space: nowrap;
 }
 
+.validation-command-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.validation-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.evidence-bundle {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(126, 176, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(4, 9, 19, 0.48);
+}
+
+.evidence-bundle > div:first-child {
+  display: grid;
+  gap: 5px;
+}
+
+.evidence-bundle span {
+  color: #9fb3cd;
+}
+
+.evidence-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.evidence-list > div {
+  display: grid;
+  grid-template-columns: 24px 1fr;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid rgba(126, 176, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(7, 14, 28, 0.62);
+}
+
+.evidence-list > div > div {
+  display: grid;
+  gap: 4px;
+}
+
 .decision-summary {
   display: grid;
   grid-template-columns: minmax(0, 1fr) max-content;
@@ -911,6 +966,10 @@ code {
 .wide-panel {
   display: block;
   column-span: all;
+}
+
+.paired-grid .wide-panel {
+  grid-column: 1 / -1;
 }
 
 .intake-guide .checklist {
@@ -1319,6 +1378,16 @@ pre {
 
   .results-grid {
     column-count: 1;
+  }
+
+  .paired-grid,
+  .validation-command-grid,
+  .evidence-list {
+    grid-template-columns: 1fr;
+  }
+
+  .right-column-panel {
+    grid-column: auto;
   }
 
   .hero-band {
