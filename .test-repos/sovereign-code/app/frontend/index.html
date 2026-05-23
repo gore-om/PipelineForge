@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ledgerly Expense Tracker</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main id="authView" class="auth-layout">
+      <section id="authLanding" class="auth-landing">
+        <div class="auth-header">
+          <h1>Sovereign</h1>
+          <p>Absolute Governance.</p>
+        </div>
+
+        <div class="auth-description">
+          <p>
+            Govern your wealth. Architect your personal economy through a
+            <span>unified, production-grade system</span>
+            designed for surgical precision and total capital control.
+          </p>
+        </div>
+
+        <div class="auth-actions">
+          <button class="lux-button gold" data-auth-open="login" type="button">Log In</button>
+          <button class="lux-button dark" data-auth-open="register" type="button">Sign Up</button>
+        </div>
+
+        <p class="auth-footer">v3.9.2 // secure.deploy.master</p>
+      </section>
+
+      <section id="authPanel" class="auth-panel hidden">
+        <button id="authBackButton" class="back-button" type="button">Back</button>
+        <p class="auth-kicker">Sovereign Access</p>
+        <h2 id="authTitle">Log in</h2>
+
+        <form id="authForm" class="stack-form">
+          <label id="nameField">
+            <span>Name</span>
+            <input name="name" type="text" placeholder="Alex Morgan" />
+          </label>
+          <label>
+            <span>Email</span>
+            <input name="email" type="email" placeholder="alex@example.com" required />
+          </label>
+          <label>
+            <span>Password</span>
+            <input name="password" type="password" placeholder="8 unique characters minimum" minlength="8" required />
+          </label>
+          <button id="authSubmitButton" class="primary-button gold-submit" type="submit">Log in</button>
+          <p id="authMessage" class="form-message"></p>
+        </form>
+      </section>
+    </main>
+
+    <main id="appView" class="app-shell hidden">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">L</div>
+          <div>
+            <p class="eyebrow">Ledgerly</p>
+            <h1>Expense Ops</h1>
+          </div>
+        </div>
+
+        <nav aria-label="Primary navigation">
+          <button class="nav-item active" data-page="dashboard" type="button">Overview</button>
+          <button class="nav-item" data-page="insights" type="button">Insights</button>
+          <button class="nav-item" data-page="transactions" type="button">Transactions</button>
+          <button class="nav-item" data-page="profile" type="button">Profile</button>
+        </nav>
+
+        <section class="user-card">
+          <div id="profileInitials" class="avatar">U</div>
+          <div>
+            <strong id="sidebarName">User</strong>
+            <small id="sidebarEmail">user@example.com</small>
+          </div>
+        </section>
+
+        <section class="version-card">
+          <span>App Version</span>
+          <strong id="appVersion">v0.0.0</strong>
+        </section>
+
+        <button id="logoutButton" class="ghost-button" type="button">Logout</button>
+      </aside>
+
+      <section class="workspace">
+        <header class="topbar">
+          <div>
+            <p id="pageEyebrow" class="eyebrow">Personal finance command center</p>
+            <h2 id="pageTitle">Overview and insights</h2>
+          </div>
+          <button id="refreshButton" class="icon-button" type="button" aria-label="Refresh dashboard">Refresh</button>
+        </header>
+
+        <section id="dashboardPage" class="page active-page">
+          <section class="metrics-grid" aria-label="Financial summary">
+            <article class="metric-card income">
+              <span>Total Income</span>
+              <strong id="totalIncome">$0</strong>
+              <small>This month</small>
+            </article>
+            <article class="metric-card expense">
+              <span>Total Expense</span>
+              <strong id="totalExpense">$0</strong>
+              <small>This month</small>
+            </article>
+            <article class="metric-card balance">
+              <span>Balance</span>
+              <strong id="netBalance">$0</strong>
+              <small>Income minus expense</small>
+            </article>
+            <article class="metric-card health">
+              <span>API Status</span>
+              <strong id="apiStatus">Checking</strong>
+              <small id="apiLatency">Waiting for backend</small>
+            </article>
+          </section>
+
+          <section class="content-grid compact-grid">
+            <article class="panel profile-snapshot">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Budget posture</p>
+                  <h3>Profile snapshot</h3>
+                </div>
+              </div>
+              <div class="snapshot-grid">
+                <div><span>Monthly budget</span><strong id="snapshotBudget">$0</strong></div>
+                <div><span>Savings goal</span><strong id="snapshotGoal">$0</strong></div>
+                <div><span>Currency</span><strong id="snapshotCurrency">USD</strong></div>
+                <div><span>Focus category</span><strong id="snapshotCategory">Food</strong></div>
+              </div>
+            </article>
+          </section>
+        </section>
+
+        <section id="insightsPage" class="page">
+          <article class="panel insights-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Insights</p>
+                <h3>Category breakdown</h3>
+              </div>
+            </div>
+            <div id="categoryList" class="category-list" aria-live="polite"></div>
+          </article>
+        </section>
+
+        <section id="transactionsPage" class="page">
+          <article class="panel transaction-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Transactions</p>
+                <h3>Add a new record</h3>
+              </div>
+            </div>
+
+            <form id="transactionForm" class="transaction-form">
+              <label>
+                <span>Description</span>
+                <input name="description" type="text" placeholder="Salary, groceries, rent" required />
+              </label>
+              <label>
+                <span>Amount</span>
+                <input name="amount" type="number" min="0.01" step="0.01" placeholder="120.00" required />
+              </label>
+              <label>
+                <span>Type</span>
+                <select name="type" required>
+                  <option value="expense">Expense</option>
+                  <option value="income">Income</option>
+                </select>
+              </label>
+              <label>
+                <span>Category</span>
+                <select name="category" required>
+                  <option value="Housing">Housing</option>
+                  <option value="Food">Food</option>
+                  <option value="Transport">Transport</option>
+                  <option value="Utilities">Utilities</option>
+                  <option value="Shopping">Shopping</option>
+                  <option value="Salary">Salary</option>
+                  <option value="Freelance">Freelance</option>
+                  <option value="Other">Other</option>
+                </select>
+              </label>
+              <button class="primary-button" type="submit">Add transaction</button>
+            </form>
+          </article>
+
+          <section class="panel table-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Latest activity</p>
+                <h3>Recent transactions</h3>
+              </div>
+              <span id="recordCount" class="record-count">0 records</span>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Description</th>
+                    <th>Category</th>
+                    <th>Type</th>
+                    <th>Amount</th>
+                    <th>Date</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="transactionRows"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section id="profilePage" class="page">
+          <article class="panel profile-panel">
+            <div class="profile-header">
+              <div id="profileAvatar" class="profile-avatar">U</div>
+              <div>
+                <p class="eyebrow">Profile</p>
+                <h3 id="profileHeading">Account preferences</h3>
+                <p id="profileSubheading">Keep deployment-safe user settings in PostgreSQL.</p>
+              </div>
+            </div>
+
+            <form id="profileForm" class="profile-form">
+              <label>
+                <span>Name</span>
+                <input name="name" type="text" required />
+              </label>
+              <label>
+                <span>Email</span>
+                <input name="email" type="email" disabled />
+              </label>
+              <label>
+                <span>Monthly budget</span>
+                <input name="monthly_budget" type="number" min="0" step="50" />
+              </label>
+              <label>
+                <span>Savings goal</span>
+                <input name="savings_goal" type="number" min="0" step="100" />
+              </label>
+              <label>
+                <span>Currency</span>
+                <select name="currency">
+                  <option value="USD">USD</option>
+                  <option value="INR">INR</option>
+                  <option value="EUR">EUR</option>
+                  <option value="GBP">GBP</option>
+                </select>
+              </label>
+              <label>
+                <span>Focus category</span>
+                <select name="preferred_category">
+                  <option value="Food">Food</option>
+                  <option value="Housing">Housing</option>
+                  <option value="Transport">Transport</option>
+                  <option value="Utilities">Utilities</option>
+                  <option value="Investments">Investments</option>
+                  <option value="Savings">Savings</option>
+                </select>
+              </label>
+              <label>
+                <span>Timezone</span>
+                <input name="timezone" type="text" />
+              </label>
+              <div class="toggle-row">
+                <label><input name="weekly_digest" type="checkbox" /> Weekly digest</label>
+                <label><input name="spend_alerts" type="checkbox" /> Spend alerts</label>
+              </div>
+              <button class="primary-button" type="submit">Save profile</button>
+              <p id="profileMessage" class="form-message"></p>
+            </form>
+          </article>
+        </section>
+      </section>
+    </main>
+
+    <template id="emptyStateTemplate">
+      <tr>
+        <td colspan="6" class="empty-state">No transactions yet. Add one from the Transactions page.</td>
+      </tr>
+    </template>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

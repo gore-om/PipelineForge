@@ -1,0 +1,19 @@
+{
+  "name": "ledgerly-api",
+  "version": "1.0.0",
+  "description": "Expense tracker backend API for Jenkins, ACR and AKS practice.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "helmet": "^8.0.0",
+    "pg": "^8.13.1",
+    "pino": "^9.6.0",
+    "pino-http": "^10.3.0"
+  }
+}

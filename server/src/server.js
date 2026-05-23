@@ -36,6 +36,7 @@ app.post("/api/analyze/github", (req, res) => {
       repoName: name,
       files: [],
       packageJson: null,
+      fileContents: new Map(),
       code: "",
       githubUrl: url
     })
@@ -57,6 +58,7 @@ app.post("/api/analyze/upload", upload.single("repo"), (req, res) => {
     const files = entries.map((entry) => normalizePath(entry.entryName));
     const packageEntry = entries.find((entry) => normalizePath(entry.entryName).endsWith("package.json"));
     const packageJson = readJsonEntry(packageEntry);
+    const fileContents = readTextEntries(entries);
     const codeSample = readCodeSample(entries);
 
     res.json(
@@ -65,6 +67,7 @@ app.post("/api/analyze/upload", upload.single("repo"), (req, res) => {
         repoName: req.file.originalname.replace(/\.zip$/i, ""),
         files,
         packageJson,
+        fileContents,
         code: codeSample,
         githubUrl: null
       })
@@ -122,8 +125,8 @@ app.get("/api/runtime/toolchain", async (_req, res) => {
   res.json(await inspectRuntimeToolchain());
 });
 
-function buildAnalysis({ source, repoName, files, packageJson, code, githubUrl }) {
-  const stack = detectStack(files, packageJson, githubUrl, code);
+function buildAnalysis({ source, repoName, files, packageJson, fileContents = new Map(), code, githubUrl }) {
+  const stack = detectStack(files, packageJson, githubUrl, code, fileContents);
   const validations = validateRepository(files, packageJson, stack, source, code);
   const templates = selectTemplates(stack);
   const generatedFiles = generateFiles(stack);
@@ -156,8 +159,9 @@ function buildAnalysis({ source, repoName, files, packageJson, code, githubUrl }
 function buildPromotionDecision(validations, scoreBreakdown) {
   const failed = validations.filter((item) => item.status === "failed");
   const warnings = validations.filter((item) => item.status === "warning");
+  const deploymentBlockers = warnings.filter((item) => ["Runtime environment", "Secret externalization"].includes(item.name));
   const hasScoreRisk = scoreBreakdown.score < 85;
-  const status = failed.length || hasScoreRisk ? "blocked" : warnings.length ? "review" : "ready";
+  const status = failed.length || deploymentBlockers.length || hasScoreRisk ? "blocked" : warnings.length ? "review" : "ready";
   const title =
     status === "blocked"
       ? "Blocked before production"
@@ -167,6 +171,8 @@ function buildPromotionDecision(validations, scoreBreakdown) {
   const message =
     failed.length
       ? "Resolve blocking analyzer rules before enabling sandbox, pipeline, or cloud deployment gates."
+      : deploymentBlockers.length
+        ? "Map required runtime secrets and deployment inputs before enabling cloud deployment gates."
       : hasScoreRisk
         ? "Raise the readiness score above the release threshold before enabling cloud deployment gates."
       : status === "review"
@@ -180,8 +186,8 @@ function buildPromotionDecision(validations, scoreBreakdown) {
     gates: [
       gate(
         "Blocking rules",
-        failed.length ? "blocked" : "passed",
-        failed.length ? `${failed.length} blocking rule${failed.length === 1 ? "" : "s"} failed.` : "No blocking analyzer rules failed."
+        failed.length || deploymentBlockers.length ? "blocked" : "passed",
+        failed.length ? `${failed.length} blocking rule${failed.length === 1 ? "" : "s"} failed.` : deploymentBlockers.length ? `${deploymentBlockers.length} deployment input gate${deploymentBlockers.length === 1 ? "" : "s"} still blocked.` : "No blocking analyzer rules failed."
       ),
       gate(
         "Readiness threshold",
@@ -198,12 +204,14 @@ function buildPromotionDecision(validations, scoreBreakdown) {
 }
 
 function buildPreflight(stack, validations, generatedFiles) {
+  const buildReady = stack.buildCommand || stack.buildRequired === false;
   const gates = [
     gate("Stack confidence", stack.runtime.length ? "passed" : "blocked", stack.runtime.length ? `Detected ${stack.runtime.join(", ")}.` : "No runtime detected."),
     gate("Dependency manifest", stack.packageManager !== "unknown" || !stack.runtime.includes("JavaScript") ? "passed" : "blocked", stack.packageManager !== "unknown" ? `Package manager detected: ${stack.packageManager}.` : "JavaScript app needs package.json before build validation."),
-    gate("Build command", stack.buildCommand ? "passed" : "blocked", stack.buildCommand ? `Build command ready: ${stack.buildCommand}.` : "Build command missing."),
+    gate("Build command", buildReady ? "passed" : "blocked", stack.buildCommand ? `Build command ready: ${stack.buildCommand}.` : "No artifact build step required for detected Dockerized services."),
     gate("Start command", stack.startCommand ? "passed" : "blocked", stack.startCommand ? `Start command ready: ${stack.startCommand}.` : "Start command missing."),
-    gate("Container files", generatedFiles.some((file) => file.path === "Dockerfile") ? "warning" : "blocked", "Dockerfile is available for review before sandbox build."),
+    gate("Container files", generatedFiles.some((file) => file.path.toLowerCase().endsWith("dockerfile")) ? "warning" : "blocked", "Dockerfile is available for review before sandbox build."),
+    gate("Service model", stack.services?.length > 1 ? "passed" : "warning", stack.services?.length > 1 ? `${stack.services.length} deployable services detected.` : "Single-service deployment model detected."),
     gate("Security scan", "warning", "Trivy scan will run after Docker is available locally."),
     gate("Cloud credentials", "warning", "Cloud apply is disabled until credentials and target subscription/account are configured.")
   ];
@@ -221,18 +229,20 @@ function gate(name, status, message) {
 
 function buildInfraPlan(stack) {
   const needsDatabase = stack.databases.length > 0;
+  const isMultiService = stack.services?.length > 1;
 
   return {
     azure: {
       provider: "azure",
-      summary: "Azure landing plan for Jenkins, ACR, AKS, and optional managed database.",
+      summary: isMultiService ? "Azure landing plan for multi-service apps on ACR, AKS, managed PostgreSQL, secrets, and monitoring." : "Azure landing plan for Jenkins, ACR, AKS, and optional managed database.",
       resources: [
         infraResource("Resource Group", "Logical boundary for all PipelineForge-created Azure resources.", true),
-        infraResource("Azure Container Registry", "Stores versioned application images used by AKS.", true),
+        infraResource("Azure Container Registry", isMultiService ? "Stores frontend and backend application images used by AKS." : "Stores versioned application images used by AKS.", true),
         infraResource("AKS Cluster", "Runs the application containers with Kubernetes service and ingress manifests.", true),
         infraResource("ACR Pull Role Assignment", "Allows AKS kubelet identity to pull images from ACR.", true),
-        infraResource("Jenkins VM", "Runs CI/CD controller until managed CI is configured.", true),
+        infraResource("Azure Pipelines Service Connection", "Pushes validated images to ACR and deploys reviewed manifests.", true),
         infraResource("Azure Database for PostgreSQL", needsDatabase ? "Managed database detected from app dependencies." : "Optional database if the app requires persistence.", needsDatabase),
+        infraResource("Key Vault", "Stores DATABASE_URL, TOKEN_SECRET, and runtime secrets outside source control.", true),
         infraResource("Log Analytics Workspace", "Collects AKS logs and metrics for feedback.", true)
       ],
       terraformFiles: [
@@ -242,14 +252,15 @@ function buildInfraPlan(stack) {
     },
     aws: {
       provider: "aws",
-      summary: "AWS landing plan for Jenkins, ECR, EKS, and optional managed database.",
+      summary: isMultiService ? "AWS landing plan for multi-service apps on ECR, EKS or ECS, RDS PostgreSQL, secrets, and CloudWatch." : "AWS landing plan for Jenkins, ECR, EKS, and optional managed database.",
       resources: [
         infraResource("VPC", "Network boundary for EKS, Jenkins, and data services.", true),
-        infraResource("Elastic Container Registry", "Stores versioned application images used by EKS.", true),
-        infraResource("EKS Cluster", "Runs the application containers with Kubernetes service and ingress manifests.", true),
-        infraResource("Jenkins EC2", "Runs CI/CD controller until managed CI is configured.", true),
+        infraResource("Elastic Container Registry", isMultiService ? "Stores frontend and backend application images used by runtime services." : "Stores versioned application images used by EKS.", true),
+        infraResource("EKS or ECS", "Runs application containers with service discovery and ingress/load balancer routing.", true),
+        infraResource("Azure Pipelines AWS Service Connection", "Pushes images to ECR and deploys reviewed manifests through CI/CD.", true),
         infraResource("IAM Roles", "Grants EKS, nodes, and CI controlled access to AWS services.", true),
         infraResource("RDS PostgreSQL", needsDatabase ? "Managed database detected from app dependencies." : "Optional database if the app requires persistence.", needsDatabase),
+        infraResource("Secrets Manager", "Stores DATABASE_URL, TOKEN_SECRET, and runtime secrets outside source control.", true),
         infraResource("CloudWatch Logs", "Collects application and cluster logs for feedback.", true)
       ],
       terraformFiles: [
@@ -671,7 +682,8 @@ function autoFixIngressTls(content) {
 }
 
 function runSandboxValidation({ files, deploymentInputs, repoName }) {
-  const fileMap = new Map(files.map((file) => [file.path, file]));
+  const resolvedFiles = materializeDeploymentInputs(files, deploymentInputs);
+  const fileMap = new Map(resolvedFiles.map((file) => [file.path, file]));
   const checks = [
     validateDockerfile(fileMap),
     validateDockerIgnore(fileMap),
@@ -702,22 +714,49 @@ function sandboxCheck(name, status, message, command) {
   return { name, status, message, command };
 }
 
+function materializeDeploymentInputs(files, deploymentInputs = {}) {
+  const registry = String(deploymentInputs.imageRegistry ?? "").trim().replace(/\/$/, "");
+  const domain = String(deploymentInputs.domain ?? "").trim();
+  return files.map((file) => {
+    let content = file.content ?? "";
+    if (registry) {
+      content = content
+        .replaceAll("REPLACE_WITH_REGISTRY", registry)
+        .replaceAll("REPLACE_WITH_ACR_OR_ECR_SERVICE_CONNECTION", registry);
+    }
+    if (domain) content = content.replaceAll("REPLACE_WITH_DOMAIN", domain);
+    const inputAliases = {
+      DATABASE_URL: ["DATABASE_URL", "databaseUrl", "database_url"],
+      TOKEN_SECRET: ["TOKEN_SECRET", "tokenSecret", "token_secret"],
+      CORS_ORIGIN: ["CORS_ORIGIN", "corsOrigin", "cors_origin"]
+    };
+    for (const key of Object.keys(inputAliases)) {
+      const value = String(inputAliases[key].map((alias) => deploymentInputs[alias]).find(Boolean) ?? "").trim();
+      if (value) content = content.replaceAll(`REPLACE_WITH_${key}`, value);
+    }
+    return { ...file, content };
+  });
+}
+
 function validateDockerfile(fileMap) {
-  const file = fileMap.get("Dockerfile");
-  if (!file) return sandboxCheck("Dockerfile syntax", "failed", "Dockerfile is missing.", "docker build --check .");
-  const content = file.content ?? "";
+  const dockerfiles = [...fileMap.entries()].filter(([filePath]) => filePath.toLowerCase().endsWith("dockerfile"));
+  if (!dockerfiles.length) return sandboxCheck("Dockerfile syntax", "failed", "Dockerfile is missing.", "docker build --check .");
+  const invalid = dockerfiles.find(([, file]) => !/^FROM\s+\S+/m.test(file.content ?? "") || !(/^CMD\s+|^ENTRYPOINT\s+/m.test(file.content ?? "") || /nginx:/i.test(file.content ?? "")));
+  const missingExpose = dockerfiles.find(([, file]) => !/^EXPOSE\s+\d+/m.test(file.content ?? ""));
+  const content = dockerfiles.map(([, file]) => file.content ?? "").join("\n");
   const hasFrom = /^FROM\s+\S+/m.test(content);
   const hasCommand = /^CMD\s+|^ENTRYPOINT\s+/m.test(content);
   const hasExpose = /^EXPOSE\s+\d+/m.test(content);
 
-  if (!hasFrom) return sandboxCheck("Dockerfile syntax", "failed", "Dockerfile needs a FROM image.", "docker build --check .");
-  if (!hasCommand) return sandboxCheck("Dockerfile runtime", "failed", "Dockerfile needs CMD or ENTRYPOINT.", "docker build --check .");
-  if (!hasExpose) return sandboxCheck("Dockerfile port", "warning", "Dockerfile has no EXPOSE instruction.", "docker build --check .");
-  return sandboxCheck("Dockerfile syntax", "passed", "Dockerfile has base image, runtime command, and exposed port.", "docker build --check .");
+  if (invalid || !hasFrom) return sandboxCheck("Dockerfile syntax", "failed", "One or more Dockerfiles need a FROM image and runtime command.", "docker build --check <service>");
+  if (missingExpose || !hasExpose) return sandboxCheck("Dockerfile port", "warning", "One or more Dockerfiles have no EXPOSE instruction.", "docker build --check <service>");
+  if (!hasCommand && !content.includes("nginx:")) return sandboxCheck("Dockerfile runtime", "failed", "Dockerfile needs CMD or ENTRYPOINT.", "docker build --check .");
+  return sandboxCheck("Dockerfile syntax", "passed", `${dockerfiles.length} Dockerfile${dockerfiles.length === 1 ? "" : "s"} have base images, runtime commands, and exposed ports.`, "docker build --check <service>");
 }
 
 function validateDockerIgnore(fileMap) {
-  const file = fileMap.get(".dockerignore");
+  const ignores = [...fileMap.entries()].filter(([filePath]) => filePath.toLowerCase().endsWith(".dockerignore"));
+  const file = fileMap.get(".dockerignore") ?? ignores[0]?.[1];
   if (!file) return sandboxCheck("Build context hygiene", "warning", ".dockerignore is missing.", "docker build --check .");
   const content = file.content ?? "";
   const required = ["node_modules", ".env", ".git"];
@@ -733,13 +772,14 @@ function validateCompose(fileMap, deploymentInputs) {
   const file = fileMap.get("docker-compose.yml");
   if (!file) return sandboxCheck("Compose smoke test", "skipped", "docker-compose.yml was not generated.", "docker compose config");
   const content = file.content ?? "";
-  const hasService = /services:\s*\n\s+app:/m.test(content);
+  const hasService = /services:\s*\n\s+\S+:/m.test(content);
+  const hasMultiService = /postgres:/m.test(content) && /frontend|ledgerly-frontend/m.test(content) && /backend|ledgerly-backend/m.test(content);
   const hasPort = /ports:\s*\n\s+-\s+"\d+:\d+"/m.test(content) || /ports:\s*\n\s+-\s+"\d+:80"/m.test(content);
   const hasInputPort = Boolean(String(deploymentInputs.port ?? "").trim());
 
-  if (!hasService) return sandboxCheck("Compose smoke test", "failed", "Compose file needs an app service.", "docker compose config");
-  if (!hasPort || !hasInputPort) return sandboxCheck("Compose smoke test", "warning", "Compose port mapping should be confirmed before local smoke testing.", "docker compose config");
-  return sandboxCheck("Compose smoke test", "passed", "Compose service and port mapping are ready for local config validation.", "docker compose config");
+  if (!hasService) return sandboxCheck("Compose smoke test", "failed", "Compose file needs at least one service.", "docker compose config");
+  if (!hasPort && !hasMultiService) return sandboxCheck("Compose smoke test", "warning", "Compose port mapping should be confirmed before local smoke testing.", "docker compose config");
+  return sandboxCheck("Compose smoke test", "passed", hasMultiService ? "Compose includes frontend, backend, and Postgres sandbox services." : "Compose service and port mapping are ready for local config validation.", "docker compose config");
 }
 
 function validateKubernetesDeployment(fileMap, deploymentInputs) {
@@ -784,7 +824,7 @@ function validateAzurePipeline(fileMap) {
   const file = fileMap.get("azure-pipelines.yml");
   if (!file) return sandboxCheck("Azure Pipelines YAML", "skipped", "azure-pipelines.yml was not generated.", "az pipelines validate");
   const content = file.content ?? "";
-  const required = ["stage: Build", "stage: Containerize", "stage: Deploy"];
+  const required = content.includes("BuildImages") ? ["stage: Validate", "stage: BuildImages", "stage: Deploy"] : ["stage: Build", "stage: Containerize", "stage: Deploy"];
   const missing = required.filter((stage) => !content.includes(stage));
 
   if (missing.length) return sandboxCheck("Azure Pipelines YAML", "failed", `Missing pipeline stages: ${missing.join(", ")}.`, "az pipelines validate");
@@ -796,7 +836,7 @@ function validateJenkinsPipeline(fileMap) {
   const file = fileMap.get("Jenkinsfile");
   if (!file) return sandboxCheck("Jenkinsfile", "skipped", "Jenkinsfile was not generated.", "jenkinsfile-runner");
   const content = file.content ?? "";
-  const required = ["stage('Install')", "stage('Test')", "stage('Build')", "stage('Containerize')"];
+  const required = content.includes("Build Images") ? ["stage('Checkout')", "stage('Test')", "stage('Build Images')"] : ["stage('Install')", "stage('Test')", "stage('Build')", "stage('Containerize')"];
   const missing = required.filter((stage) => !content.includes(stage));
 
   if (missing.length) return sandboxCheck("Jenkinsfile", "warning", `Jenkinsfile is missing optional stages: ${missing.join(", ")}.`, "jenkinsfile-runner");
@@ -828,6 +868,8 @@ function buildSandboxNextActions(checks, repoName) {
 }
 
 function generateFiles(stack) {
+  if (stack.services?.length > 1) return generateMultiServiceFiles(stack);
+
   return [
     {
       path: "Dockerfile",
@@ -932,6 +974,376 @@ function generateDockerfile(stack) {
     "COPY . .",
     `EXPOSE ${stack.port === "auto-detect" ? "3000" : stack.port}`,
     "CMD [\"npm\", \"run\", \"start\"]"
+  ].join("\n");
+}
+
+function generateMultiServiceFiles(stack) {
+  return [
+    ...stack.services.map((service) => ({
+      path: `${service.path}/Dockerfile`,
+      purpose: `${service.name} container image`,
+      status: service.hasDockerfile ? "ready" : "needs-input",
+      content: generateServiceDockerfile(service)
+    })),
+    ...stack.services.map((service) => ({
+      path: `${service.path}/.dockerignore`,
+      purpose: `${service.name} secure image context`,
+      status: "ready",
+      content: generateDockerignore()
+    })),
+    {
+      path: "docker-compose.yml",
+      purpose: "Multi-service sandbox with Postgres connectivity",
+      status: "ready",
+      content: generateMultiServiceCompose(stack)
+    },
+    {
+      path: "Jenkinsfile",
+      purpose: "Multi-image modular CI/CD pipeline",
+      status: "needs-input",
+      content: generateMultiServiceJenkinsfile(stack)
+    },
+    {
+      path: "azure-pipelines.yml",
+      purpose: "Azure Pipelines multi-image CI/CD workflow",
+      status: "needs-input",
+      content: generateMultiServiceAzurePipelines(stack)
+    },
+    {
+      path: "k8s/secret.yaml",
+      purpose: "Runtime secret placeholders",
+      status: "needs-input",
+      content: generateMultiServiceSecrets(stack)
+    },
+    {
+      path: "k8s/deployment.yaml",
+      purpose: "Frontend and backend Kubernetes deployments",
+      status: "needs-input",
+      content: generateMultiServiceDeployments(stack)
+    },
+    {
+      path: "k8s/service.yaml",
+      purpose: "Frontend and backend Kubernetes services",
+      status: "ready",
+      content: generateMultiServiceServices(stack)
+    },
+    {
+      path: "k8s/ingress.yaml",
+      purpose: "HTTPS ingress route for frontend and API traffic",
+      status: "needs-input",
+      content: generateMultiServiceIngress(stack)
+    }
+  ];
+}
+
+function generateDockerignore() {
+  return [
+    "node_modules",
+    "dist",
+    "build",
+    ".git",
+    ".env",
+    "*.log",
+    "coverage",
+    ".DS_Store"
+  ].join("\n");
+}
+
+function generateServiceDockerfile(service) {
+  if (service.kind === "frontend") {
+    return [
+      "FROM nginx:1.27-alpine",
+      "",
+      "COPY ./nginx.conf /etc/nginx/conf.d/default.conf",
+      "COPY ./ /usr/share/nginx/html",
+      "",
+      `EXPOSE ${service.port}`,
+      "",
+      "HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \\",
+      "  CMD wget -qO- http://127.0.0.1/ >/dev/null || exit 1"
+    ].join("\n");
+  }
+
+  return [
+    "FROM node:22-alpine AS deps",
+    "WORKDIR /app",
+    "COPY package*.json ./",
+    "RUN npm install --omit=dev",
+    "",
+    "FROM node:22-alpine",
+    "WORKDIR /app",
+    "ENV NODE_ENV=production",
+    "COPY --from=deps /app/node_modules ./node_modules",
+    "COPY package*.json ./",
+    "COPY src ./src",
+    "",
+    `EXPOSE ${service.port}`,
+    "",
+    "HEALTHCHECK --interval=30s --timeout=3s --start-period=15s --retries=3 \\",
+    `  CMD wget -qO- http://127.0.0.1:${service.port}${service.healthPath} >/dev/null || exit 1`,
+    "",
+    "CMD [\"npm\", \"start\"]"
+  ].join("\n");
+}
+
+function generateMultiServiceCompose(stack) {
+  const frontend = stack.services.find((service) => service.kind === "frontend");
+  const backend = stack.services.find((service) => service.kind === "backend");
+  const lines = [
+    "services:"
+  ];
+
+  if (stack.databases.includes("PostgreSQL")) {
+    lines.push(
+      "  postgres:",
+      "    image: postgres:16-alpine",
+      "    environment:",
+      "      POSTGRES_DB: ledgerly",
+      "      POSTGRES_USER: ledgerly",
+      "      POSTGRES_PASSWORD: ledgerly",
+      "    healthcheck:",
+      "      test: [\"CMD-SHELL\", \"pg_isready -U ledgerly\"]",
+      "      interval: 10s",
+      "      timeout: 5s",
+      "      retries: 5",
+      "    volumes:",
+      "      - postgres-data:/var/lib/postgresql/data"
+    );
+  }
+
+  if (backend) {
+    lines.push(
+      `  ${backend.serviceName}:`,
+      `    build: ./${backend.path}`,
+      "    environment:",
+      `      PORT: ${backend.port}`,
+      "      APP_ENV: production",
+      "      APP_VERSION: local",
+      "      DATABASE_URL: postgres://ledgerly:ledgerly@postgres:5432/ledgerly",
+      "      DB_SSL: \"false\"",
+      "      CORS_ORIGIN: \"*\"",
+      "      LOG_LEVEL: info",
+      "      TOKEN_SECRET: REPLACE_WITH_TOKEN_SECRET",
+      "    depends_on:",
+      "      postgres:",
+      "        condition: service_healthy",
+      "    ports:",
+      `      - \"${backend.port}:${backend.port}\"`
+    );
+  }
+
+  if (frontend) {
+    lines.push(
+      `  ${frontend.serviceName}:`,
+      `    build: ./${frontend.path}`,
+      "    depends_on:",
+      `      - ${backend?.serviceName ?? "backend"}`,
+      "    ports:",
+      `      - \"${frontend.port}:${frontend.port}\"`
+    );
+  }
+
+  if (stack.databases.includes("PostgreSQL")) {
+    lines.push("", "volumes:", "  postgres-data:");
+  }
+
+  return lines.join("\n");
+}
+
+function generateMultiServiceJenkinsfile(stack) {
+  const services = stack.services.map((service) => service.kind);
+  return [
+    "pipeline {",
+    "    agent any",
+    "    options { timestamps() }",
+    "    environment {",
+    "        REGISTRY = 'REPLACE_WITH_REGISTRY'",
+    "    }",
+    "    stages {",
+    "        stage('Checkout') { steps { checkout scm } }",
+    "        stage('Install Backend Dependencies') { steps { dir('app/backend') { sh 'npm install' } } }",
+    "        stage('Test') { steps { echo 'No tests detected yet; add tests before enforcing this gate' } }",
+    "        stage('Build Images') {",
+    "            parallel {",
+    ...(services.includes("backend") ? ["                stage('Backend Image') { steps { sh 'docker build -t $REGISTRY/sovereign-backend:${BUILD_NUMBER} app/backend' } }"] : []),
+    ...(services.includes("frontend") ? ["                stage('Frontend Image') { steps { sh 'docker build -t $REGISTRY/sovereign-frontend:${BUILD_NUMBER} app/frontend' } }"] : []),
+    "            }",
+    "        }",
+    "        stage('Security Scan') { steps { echo 'Run Trivy on both images before push' } }",
+    "        stage('Push Images') { steps { echo 'Push images after registry credentials are configured' } }",
+    "        stage('Deploy') { when { expression { false } } steps { echo 'Deployment locked until Terraform and credentials are approved' } }",
+    "    }",
+    "}"
+  ].join("\n");
+}
+
+function generateMultiServiceAzurePipelines(stack) {
+  const hasBackend = stack.services.some((service) => service.kind === "backend");
+  const hasFrontend = stack.services.some((service) => service.kind === "frontend");
+  return [
+    "trigger:",
+    "  branches:",
+    "    include:",
+    "      - main",
+    "",
+    "pool:",
+    "  vmImage: ubuntu-latest",
+    "",
+    "variables:",
+    "  containerRegistry: REPLACE_WITH_ACR_OR_ECR_SERVICE_CONNECTION",
+    "  imageTag: $(Build.BuildId)",
+    "",
+    "stages:",
+    "  - stage: Validate",
+    "    jobs:",
+    "      - job: Source",
+    "        steps:",
+    "          - checkout: self",
+    ...(hasBackend ? ["          - script: npm install", "            workingDirectory: app/backend", "            displayName: Install backend dependencies"] : []),
+    "          - script: echo Add automated tests before enforcing production release",
+    "            displayName: Test gate",
+    "",
+    "  - stage: BuildImages",
+    "    dependsOn: Validate",
+    "    jobs:",
+    ...(hasBackend
+      ? [
+          "      - job: BackendImage",
+          "        steps:",
+          "          - script: docker build -t $(containerRegistry)/sovereign-backend:$(imageTag) app/backend",
+          "            displayName: Build backend image"
+        ]
+      : []),
+    ...(hasFrontend
+      ? [
+          "      - job: FrontendImage",
+          "        steps:",
+          "          - script: docker build -t $(containerRegistry)/sovereign-frontend:$(imageTag) app/frontend",
+          "            displayName: Build frontend image"
+        ]
+      : []),
+    "",
+    "  - stage: Deploy",
+    "    dependsOn: BuildImages",
+    "    condition: false",
+    "    jobs:",
+    "      - job: Locked",
+    "        steps:",
+    "          - script: echo Deployment locked until registry, database secrets, Terraform, and environment approvals are configured."
+  ].join("\n");
+}
+
+function generateMultiServiceSecrets(stack) {
+  const requiredEnv = stack.requiredEnv?.length ? stack.requiredEnv : ["DATABASE_URL", "TOKEN_SECRET"];
+  return [
+    "apiVersion: v1",
+    "kind: Secret",
+    "metadata:",
+    "  name: sovereign-runtime-secrets",
+    "type: Opaque",
+    "stringData:",
+    ...requiredEnv.map((key) => `  ${key}: REPLACE_WITH_${key}`)
+  ].join("\n");
+}
+
+function generateMultiServiceDeployments(stack) {
+  return stack.services.map((service) => generateServiceDeployment(service, stack)).join("\n---\n");
+}
+
+function generateServiceDeployment(service, stack) {
+  const envLines = service.kind === "backend"
+    ? [
+        "          envFrom:",
+        "            - secretRef:",
+        "                name: sovereign-runtime-secrets"
+      ]
+    : [];
+
+  return [
+    "apiVersion: apps/v1",
+    "kind: Deployment",
+    "metadata:",
+    `  name: ${service.serviceName}`,
+    "spec:",
+    "  replicas: 2",
+    "  selector:",
+    "    matchLabels:",
+    `      app: ${service.serviceName}`,
+    "  template:",
+    "    metadata:",
+    "      labels:",
+    `        app: ${service.serviceName}`,
+    "    spec:",
+    "      containers:",
+    `        - name: ${service.kind}`,
+    `          image: REPLACE_WITH_REGISTRY/sovereign-${service.kind}:latest`,
+    "          ports:",
+    `            - containerPort: ${service.port}`,
+    ...envLines,
+    "          readinessProbe:",
+    "            httpGet:",
+    `              path: ${service.healthPath}`,
+    `              port: ${service.port}`,
+    "            initialDelaySeconds: 10",
+    "            periodSeconds: 10",
+    "          livenessProbe:",
+    "            httpGet:",
+    `              path: ${service.healthPath}`,
+    `              port: ${service.port}`,
+    "            initialDelaySeconds: 30",
+    "            periodSeconds: 20"
+  ].join("\n");
+}
+
+function generateMultiServiceServices(stack) {
+  return stack.services.map((service) => [
+    "apiVersion: v1",
+    "kind: Service",
+    "metadata:",
+    `  name: ${service.serviceName}`,
+    "spec:",
+    "  type: ClusterIP",
+    "  selector:",
+    `    app: ${service.serviceName}`,
+    "  ports:",
+    "    - name: http",
+    "      protocol: TCP",
+    `      port: ${service.port}`,
+    `      targetPort: ${service.port}`
+  ].join("\n")).join("\n---\n");
+}
+
+function generateMultiServiceIngress(stack) {
+  const frontend = stack.services.find((service) => service.kind === "frontend");
+  const backend = stack.services.find((service) => service.kind === "backend");
+  return [
+    "apiVersion: networking.k8s.io/v1",
+    "kind: Ingress",
+    "metadata:",
+    "  name: sovereign-web",
+    "spec:",
+    "  rules:",
+    "    - host: REPLACE_WITH_DOMAIN",
+    "      http:",
+    "        paths:",
+    ...(backend ? [
+      "          - path: /api",
+      "            pathType: Prefix",
+      "            backend:",
+      "              service:",
+      `                name: ${backend.serviceName}`,
+      "                port:",
+      `                  number: ${backend.port}`
+    ] : []),
+    ...(frontend ? [
+      "          - path: /",
+      "            pathType: Prefix",
+      "            backend:",
+      "              service:",
+      `                name: ${frontend.serviceName}`,
+      "                port:",
+      `                  number: ${frontend.port}`
+    ] : [])
   ].join("\n");
 }
 
@@ -1220,13 +1632,15 @@ function generateAwsVariables() {
   ].join("\n");
 }
 
-function detectStack(files, packageJson, githubUrl, code = "") {
+function detectStack(files, packageJson, githubUrl, code = "", fileContents = new Map()) {
   const lowerFiles = files.map((file) => file.toLowerCase());
   const lowerCode = code.toLowerCase();
   const deps = {
     ...packageJson?.dependencies,
     ...packageJson?.devDependencies
   };
+  const services = detectServices(files, fileContents);
+  const requiredEnv = parseRequiredEnv(fileContents);
 
   const has = (filename) => lowerFiles.some((file) => file.endsWith(filename));
   const hasAny = (patterns) => patterns.some((pattern) => lowerFiles.some((file) => file.includes(pattern)));
@@ -1239,6 +1653,7 @@ function detectStack(files, packageJson, githubUrl, code = "") {
   let startCommand = null;
   let testCommand = null;
   let port = "auto-detect";
+  let buildRequired = true;
 
   if (packageJson || has("package.json") || githubUrl) runtime.push("Node.js");
   if (has(".js") || code) runtime.push("JavaScript");
@@ -1264,6 +1679,15 @@ function detectStack(files, packageJson, githubUrl, code = "") {
   if (deps.vite) port = "5173";
   if (deps.next) port = "3000";
   if (deps.express || lowerCode.includes("listen(")) port = inferPortFromCode(code) || "3000";
+  if (services.length > 1) {
+    frameworks.push("Multi-service");
+    buildRequired = services.some((service) => service.buildRequired);
+    const backend = services.find((service) => service.kind === "backend");
+    const frontend = services.find((service) => service.kind === "frontend");
+    port = [backend ? `backend:${backend.port}` : "", frontend ? `frontend:${frontend.port}` : ""].filter(Boolean).join(", ");
+    if (!startCommand && backend?.startCommand) startCommand = backend.startCommand;
+    if (!buildCommand && services.every((service) => !service.buildRequired)) buildCommand = null;
+  }
 
   return {
     runtime: unique(runtime),
@@ -1273,8 +1697,105 @@ function detectStack(files, packageJson, githubUrl, code = "") {
     buildCommand,
     startCommand,
     testCommand,
-    port
+    port,
+    buildRequired,
+    services,
+    requiredEnv
   };
+}
+
+function detectServices(files, fileContents) {
+  const lowerFiles = files.map((file) => file.toLowerCase());
+  const serviceRoots = unique(files
+    .filter((file) => /(^|\/)(package\.json|dockerfile|nginx\.conf)$/i.test(file))
+    .map((file) => file.split("/").slice(0, -1).join("/"))
+    .filter(Boolean));
+  const nginxText = [...fileContents.entries()]
+    .filter(([file]) => file.toLowerCase().endsWith("nginx.conf"))
+    .map(([, content]) => content)
+    .join("\n");
+  const backendProxy = nginxText.match(/proxy_pass\s+http:\/\/([a-z0-9-]+):(\d+)/i);
+  const services = [];
+
+  for (const root of serviceRoots) {
+    const rootLower = root.toLowerCase();
+    const packageJson = readPackageJsonFromMap(fileContents, root);
+    const dockerfile = getContentByPath(fileContents, `${root}/Dockerfile`);
+    const nginxConf = getContentByPath(fileContents, `${root}/nginx.conf`);
+    const sourceText = [...fileContents.entries()]
+      .filter(([file]) => file.toLowerCase().startsWith(`${rootLower}/`) && /\.(js|ts|mjs|cjs)$/i.test(file))
+      .map(([, content]) => content)
+      .join("\n");
+    const deps = { ...packageJson?.dependencies, ...packageJson?.devDependencies };
+    const isFrontend = Boolean(nginxConf) || rootLower.includes("frontend") || /index\.html$/i.test(lowerFiles.find((file) => file.startsWith(`${rootLower}/`)) ?? "");
+    const isBackend = Boolean(deps.express) || rootLower.includes("backend") || sourceText.includes("express()");
+    const kind = isFrontend && !isBackend ? "frontend" : "backend";
+    const inferredPort = inferPortFromDockerfile(dockerfile) || inferPortFromCode(sourceText) || (kind === "frontend" ? "80" : backendProxy?.[2] ?? "3000");
+    const serviceName = kind === "backend" && backendProxy?.[1] ? backendProxy[1] : `ledgerly-${kind}`;
+    const buildRequired = Boolean(packageJson?.scripts?.build);
+
+    services.push({
+      name: packageJson?.name ?? serviceName,
+      serviceName,
+      kind,
+      path: root,
+      port: inferredPort,
+      healthPath: kind === "backend" ? "/health" : "/health",
+      packageManager: packageJson ? "npm" : "none",
+      buildCommand: packageJson?.scripts?.build ? "npm run build" : null,
+      startCommand: packageJson?.scripts?.start ? "npm run start" : kind === "frontend" ? "nginx" : null,
+      testCommand: packageJson?.scripts?.test ? "npm run test" : null,
+      hasDockerfile: Boolean(dockerfile),
+      buildRequired,
+      dependencies: Object.keys(deps)
+    });
+  }
+
+  const deduped = [];
+  for (const service of services) {
+    if (!deduped.some((item) => item.path === service.path)) deduped.push(service);
+  }
+  return deduped.sort((a, b) => (a.kind === "backend" ? -1 : 1) - (b.kind === "backend" ? -1 : 1));
+}
+
+function parseRequiredEnv(fileContents) {
+  const entries = [...fileContents.entries()].filter(([file]) => file.toLowerCase().endsWith(".env.example"));
+  const names = [];
+  for (const [, content] of entries) {
+    content.split(/\r?\n/).forEach((line) => {
+      const match = line.match(/^\s*([A-Z0-9_]+)\s*=/);
+      if (match) names.push(match[1]);
+    });
+  }
+  for (const [, content] of fileContents.entries()) {
+    for (const match of content.matchAll(/process\.env\.([A-Z0-9_]+)/g)) {
+      names.push(match[1]);
+    }
+  }
+  return unique(names);
+}
+
+function readPackageJsonFromMap(fileContents, root) {
+  const content = getContentByPath(fileContents, `${root}/package.json`);
+  if (!content) return null;
+  try {
+    return JSON.parse(content);
+  } catch {
+    return null;
+  }
+}
+
+function getContentByPath(fileContents, targetPath) {
+  const normalizedTarget = normalizePath(targetPath).toLowerCase();
+  for (const [file, content] of fileContents.entries()) {
+    if (normalizePath(file).toLowerCase() === normalizedTarget) return content;
+  }
+  return "";
+}
+
+function inferPortFromDockerfile(content = "") {
+  const match = content.match(/^EXPOSE\s+(\d+)/im);
+  return match?.[1] ?? null;
 }
 
 function validateRepository(files, packageJson, stack, source, code = "") {
@@ -1292,11 +1813,20 @@ function validateRepository(files, packageJson, stack, source, code = "") {
   }
 
   rules.push(rule("Package manifest", has("package.json") ? "passed" : "warning", getPackageManifestMessage(has("package.json"), stack)));
-  rules.push(rule("Dockerfile", has("dockerfile") ? "passed" : "warning", has("dockerfile") ? "Existing Dockerfile detected." : "Dockerfile can be generated."));
+  if (stack.services?.length > 1) {
+    rules.push(rule("Service model", "passed", `${stack.services.length} deployable services detected: ${stack.services.map((service) => `${service.kind}:${service.port}`).join(", ")}.`));
+  }
+  rules.push(rule("Dockerfile", has("dockerfile") ? "passed" : "warning", has("dockerfile") ? `${stack.services?.length > 1 ? "Service Dockerfiles" : "Existing Dockerfile"} detected.` : "Dockerfile can be generated."));
   rules.push(rule("Ignore rules", has(".dockerignore") ? "passed" : "warning", has(".dockerignore") ? ".dockerignore detected." : "Add .dockerignore to reduce image size and secret leakage risk."));
-  rules.push(rule("Build command", stack.buildCommand ? "passed" : "failed", stack.buildCommand ? `Detected ${stack.buildCommand}.` : "No build script detected."));
+  rules.push(rule("Build command", stack.buildCommand || stack.buildRequired === false ? "passed" : "failed", stack.buildCommand ? `Detected ${stack.buildCommand}.` : "No build script required for detected Dockerized services."));
   rules.push(rule("Start command", stack.startCommand ? "passed" : "failed", stack.startCommand ? `Detected ${stack.startCommand}.` : "No start script detected."));
   rules.push(rule("Test command", stack.testCommand ? "passed" : "warning", stack.testCommand ? `Detected ${stack.testCommand}.` : "No test script detected. CI will mark tests optional."));
+  if (stack.requiredEnv?.length) {
+    rules.push(rule("Runtime environment", "warning", `Requires deployment inputs or secrets for: ${stack.requiredEnv.join(", ")}.`));
+  }
+  if (stack.requiredEnv?.includes("TOKEN_SECRET")) {
+    rules.push(rule("Secret externalization", "warning", "TOKEN_SECRET must be supplied through a secret store before production deploy."));
+  }
   rules.push(rule("Secrets", has(".env") ? "warning" : "passed", has(".env") ? ".env file detected. Ensure it is excluded from images and CI artifacts." : "No committed .env file detected."));
 
   return rules;
@@ -1360,6 +1890,8 @@ function buildRecommendations(stack, validations, entrypoints) {
   if (stack.runtime.includes("JavaScript") && stack.packageManager === "unknown") {
     recommendations.push("Add package.json with explicit start, build, and test scripts.");
   }
+  if (stack.services?.length > 1) recommendations.push("Review multi-service frontend, backend, database, and ingress deployment inputs.");
+  if (stack.requiredEnv?.length) recommendations.push("Map required environment variables to CI/CD variables and cloud secret stores.");
   if (hasFailedBuild) recommendations.push("Define a repeatable build command before enabling artifact and container stages.");
   if (hasFailedStart) recommendations.push("Define a production start command before deployment simulation.");
   if (needsDockerfile) recommendations.push("Generate a Dockerfile and validate it with a sandbox image build.");
@@ -1376,6 +1908,15 @@ function inferPortFromCode(code) {
 
 function selectTemplates(stack) {
   const templates = [];
+  if (stack.services?.length > 1) {
+    templates.push(template("service Dockerfiles", "multi-service-existing-dockerfiles", "Backend and frontend images are built from service folders."));
+    templates.push(template(".dockerignore", "per-service-secure-defaults", "Adds secure image context rules per service."));
+    templates.push(template("Jenkinsfile", "multi-image-modular", "Builds, scans, and pushes frontend and backend images separately."));
+    templates.push(template("azure-pipelines.yml", "multi-image-azure-pipelines", "Validates source and builds frontend/backend images as separate jobs."));
+    templates.push(template("docker-compose.yml", "frontend-backend-postgres-sandbox", "Runs frontend, backend, and PostgreSQL together for sandbox validation."));
+    templates.push(template("k8s/*.yaml", "multi-service-kubernetes", "Creates frontend, backend, secrets, services, ingress, and database connectivity."));
+    return templates;
+  }
   const isNode = stack.runtime.includes("Node.js");
   const isVite = stack.frameworks.includes("Vite");
   const isNext = stack.frameworks.includes("Next.js");
@@ -1395,6 +1936,19 @@ function selectTemplates(stack) {
 }
 
 function buildPipeline(stack) {
+  if (stack.services?.length > 1) {
+    return [
+      stage("Checkout", true, "Pull repository source."),
+      stage("Detect Services", true, `${stack.services.length} services: ${stack.services.map((service) => service.kind).join(", ")}.`),
+      stage("Install Backend Dependencies", stack.services.some((service) => service.kind === "backend"), "Run backend package install before tests."),
+      stage("Run Tests", Boolean(stack.testCommand), stack.testCommand || "Optional until a test script exists."),
+      stage("Build Backend Image", stack.services.some((service) => service.kind === "backend"), "Build backend image from app/backend."),
+      stage("Build Frontend Image", stack.services.some((service) => service.kind === "frontend"), "Build frontend image from app/frontend."),
+      stage("Security Scan", true, "Scan both images before registry push."),
+      stage("Push Images", false, "Locked until registry service connection is configured."),
+      stage("Deploy", false, "Disabled until cloud target, database, secrets, and Terraform are configured.")
+    ];
+  }
   return [
     stage("Checkout", true, "Pull repository source."),
     stage("Detect Stack", true, `Runtime: ${stack.runtime.join(", ") || "unknown"}.`),
@@ -1509,6 +2063,21 @@ function readJsonEntry(entry) {
   } catch {
     return null;
   }
+}
+
+function readTextEntries(entries) {
+  const allowed = [".json", ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".html", ".css", ".conf", ".env.example", "dockerfile", ".yaml", ".yml"];
+  const map = new Map();
+
+  for (const entry of entries) {
+    const normalized = normalizePath(entry.entryName);
+    const lower = normalized.toLowerCase();
+    const isAllowed = allowed.some((extension) => lower.endsWith(extension));
+    if (!isAllowed) continue;
+    map.set(normalized, entry.getData().toString("utf8").slice(0, 50000));
+  }
+
+  return map;
 }
 
 function readCodeSample(entries) {

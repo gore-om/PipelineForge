@@ -33,6 +33,9 @@ type DeploymentInputs = {
   testCommand: string;
   imageRegistry: string;
   domain: string;
+  databaseUrl: string;
+  tokenSecret: string;
+  corsOrigin: string;
 };
 
 const emptyDeploymentInputs: DeploymentInputs = {
@@ -41,7 +44,10 @@ const emptyDeploymentInputs: DeploymentInputs = {
   startCommand: "",
   testCommand: "",
   imageRegistry: "",
-  domain: ""
+  domain: "",
+  databaseUrl: "",
+  tokenSecret: "",
+  corsOrigin: ""
 };
 
 function App() {
@@ -1046,11 +1052,26 @@ function DeploymentInputsPanel({
           <span>Public domain</span>
           <input value={inputs.domain} placeholder="app.company.com" onChange={(event) => updateInput("domain", event.target.value)} />
         </label>
+        <label>
+          <span>Database URL</span>
+          <input value={inputs.databaseUrl} placeholder="postgres://user:pass@host:5432/db" onChange={(event) => updateInput("databaseUrl", event.target.value)} />
+        </label>
+        <label>
+          <span>Token secret</span>
+          <input value={inputs.tokenSecret} placeholder="secret-store reference" onChange={(event) => updateInput("tokenSecret", event.target.value)} />
+        </label>
+        <label>
+          <span>CORS origin</span>
+          <input value={inputs.corsOrigin} placeholder="https://app.company.com" onChange={(event) => updateInput("corsOrigin", event.target.value)} />
+        </label>
       </div>
       <div className="resolution-list">
         <span className={inputs.port ? "resolved" : ""}>Port mapping</span>
         <span className={inputs.imageRegistry ? "resolved" : ""}>Container registry</span>
         <span className={inputs.domain ? "resolved" : ""}>Ingress host</span>
+        <span className={inputs.databaseUrl ? "resolved" : ""}>Database secret</span>
+        <span className={inputs.tokenSecret ? "resolved" : ""}>Token secret</span>
+        <span className={inputs.corsOrigin ? "resolved" : ""}>CORS origin</span>
         <span className={analysis?.stack.startCommand || inputs.startCommand ? "resolved" : ""}>Runtime start command</span>
       </div>
     </div>
@@ -1848,6 +1869,18 @@ function applyDeploymentInputs(file: GeneratedFile, inputs: DeploymentInputs) {
     content = content.replaceAll("REPLACE_WITH_DOMAIN", domain);
   }
 
+  if (inputs.databaseUrl.trim()) {
+    content = content.replaceAll("REPLACE_WITH_DATABASE_URL", inputs.databaseUrl.trim());
+  }
+
+  if (inputs.tokenSecret.trim()) {
+    content = content.replaceAll("REPLACE_WITH_TOKEN_SECRET", inputs.tokenSecret.trim());
+  }
+
+  if (inputs.corsOrigin.trim()) {
+    content = content.replaceAll("REPLACE_WITH_CORS_ORIGIN", inputs.corsOrigin.trim());
+  }
+
   if (inputs.buildCommand.trim()) {
     content = content.replaceAll("echo Build command pending", inputs.buildCommand.trim());
   }
@@ -1886,11 +1919,17 @@ function resolveFileStatus(file: GeneratedFile, inputs: DeploymentInputs, analys
   const hasStart = Boolean(inputs.startCommand.trim());
   const hasRegistry = Boolean(inputs.imageRegistry.trim());
   const hasDomain = Boolean(inputs.domain.trim());
+  const hasDatabaseUrl = Boolean(inputs.databaseUrl.trim());
+  const hasTokenSecret = Boolean(inputs.tokenSecret.trim());
+  const hasCorsOrigin = Boolean(inputs.corsOrigin.trim());
+  const isMultiService = Boolean(analysis.stack.services?.length && analysis.stack.services.length > 1);
 
-  if (file.path === "Dockerfile") return hasPackageManifest || (hasPort && hasStart) ? "ready" : file.status;
-  if (file.path === "Jenkinsfile" || file.path === "azure-pipelines.yml") return hasBuild && hasStart ? "ready" : file.status;
-  if (file.path === "docker-compose.yml" || file.path === "k8s/service.yaml") return hasPort ? "ready" : file.status;
-  if (file.path === "k8s/deployment.yaml") return hasPort && hasStart && hasRegistry ? "ready" : file.status;
+  if (file.path.toLowerCase().endsWith("dockerfile")) return hasPackageManifest || isMultiService || (hasPort && hasStart) ? "ready" : file.status;
+  if (file.path.endsWith(".dockerignore")) return "ready";
+  if (file.path === "Jenkinsfile" || file.path === "azure-pipelines.yml") return isMultiService ? hasRegistry ? "ready" : file.status : hasBuild && hasStart ? "ready" : file.status;
+  if (file.path === "docker-compose.yml" || file.path === "k8s/service.yaml") return isMultiService || hasPort ? "ready" : file.status;
+  if (file.path === "k8s/secret.yaml") return hasDatabaseUrl && hasTokenSecret && hasCorsOrigin ? "ready" : file.status;
+  if (file.path === "k8s/deployment.yaml") return isMultiService ? hasRegistry && hasDatabaseUrl && hasTokenSecret ? "ready" : file.status : hasPort && hasStart && hasRegistry ? "ready" : file.status;
   if (file.path === "k8s/ingress.yaml") return hasDomain ? "ready" : file.status;
 
   return file.status;

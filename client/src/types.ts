@@ -13,6 +13,23 @@ export type Analysis = {
     startCommand: string | null;
     testCommand: string | null;
     port: string;
+    buildRequired?: boolean;
+    requiredEnv?: string[];
+    services?: Array<{
+      name: string;
+      serviceName: string;
+      kind: "frontend" | "backend" | string;
+      path: string;
+      port: string;
+      healthPath: string;
+      packageManager: string;
+      buildCommand: string | null;
+      startCommand: string | null;
+      testCommand: string | null;
+      hasDockerfile: boolean;
+      buildRequired: boolean;
+      dependencies: string[];
+    }>;
   };
   report: {
     confidence: number;
