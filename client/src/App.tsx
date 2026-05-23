@@ -1467,8 +1467,9 @@ function PipelineView({
   const pipelineFile = analysis?.generatedFiles.find((file) => file.path === (ciProvider === "azure-pipelines" ? "azure-pipelines.yml" : "Jenkinsfile"));
 
   return (
-    <div className="results-grid paired-grid">
-      <FocusedPanel kicker="CI/CD provider" title="Pipeline target">
+    <div className="pipeline-layout">
+      <div className="pipeline-left">
+        <FocusedPanel kicker="CI/CD provider" title="Pipeline target">
         <div className="mode-switch cloud-switch" role="tablist" aria-label="CI/CD provider">
           <button className={ciProvider === "azure-pipelines" ? "active" : ""} onClick={() => onCiProviderChange("azure-pipelines")} type="button">
             Azure Pipelines
@@ -1478,40 +1479,80 @@ function PipelineView({
           </button>
         </div>
         <PipelineList analysis={analysis} />
-      </FocusedPanel>
-      <FocusedPanel kicker="Pipeline preview" title={pipelineFile?.path ?? "Pipeline file"}>
-        {pipelineFile ? (
-          <div className="generated-list">
-            <details open>
-              <summary>
-                <strong>{pipelineFile.path}</strong>
-                <span>{pipelineFile.purpose}</span>
-                <em className={`review-badge ${pipelineFile.status}`}>{formatFileStatus(pipelineFile.status)}</em>
-              </summary>
-              <div className="file-actions">
-                <button className="ghost-button" type="button" onClick={() => downloadGeneratedFile(pipelineFile.path, pipelineFile.content)}>
-                  Download
-                </button>
-                <button className="ghost-button" type="button" onClick={() => navigator.clipboard?.writeText(pipelineFile.content)}>
-                  Copy
-                </button>
-              </div>
-              <pre>{pipelineFile.content}</pre>
-            </details>
+        </FocusedPanel>
+      </div>
+      <div className="pipeline-right">
+        <FocusedPanel kicker="Pipeline preview" title={pipelineFile?.path ?? "Pipeline file"}>
+          {pipelineFile ? (
+            <div className="generated-list">
+              <details open>
+                <summary>
+                  <strong>{pipelineFile.path}</strong>
+                  <span>{pipelineFile.purpose}</span>
+                  <em className={`review-badge ${pipelineFile.status}`}>{formatFileStatus(pipelineFile.status)}</em>
+                </summary>
+                <div className="file-actions">
+                  <button className="ghost-button" type="button" onClick={() => downloadGeneratedFile(pipelineFile.path, pipelineFile.content)}>
+                    Download
+                  </button>
+                  <button className="ghost-button" type="button" onClick={() => navigator.clipboard?.writeText(pipelineFile.content)}>
+                    Copy
+                  </button>
+                </div>
+                <pre>{pipelineFile.content}</pre>
+              </details>
+            </div>
+          ) : (
+            <p>No pipeline file generated yet.</p>
+          )}
+        </FocusedPanel>
+        <FocusedPanel kicker="Release controls" title="Execution gates">
+          <div className="metrics-strip nested">
+            <Metric icon={<ShieldCheck size={20} />} label="Preflight" value={analysis?.preflight.status ?? "Pending"} />
+            <Metric icon={<Rocket size={20} />} label="Sandbox deploy" value="Next" />
+            <Metric icon={<Cloud size={20} />} label="Cloud apply" value="Locked" />
+            <Metric icon={<LockKeyhole size={20} />} label="Drift detection" value="Later" />
           </div>
-        ) : (
-          <p>No pipeline file generated yet.</p>
-        )}
-      </FocusedPanel>
-      <FocusedPanel kicker="Release controls" title="Execution gates" className="right-column-panel">
-        <div className="metrics-strip nested">
-          <Metric icon={<ShieldCheck size={20} />} label="Preflight" value={analysis?.preflight.status ?? "Pending"} />
-          <Metric icon={<Rocket size={20} />} label="Sandbox deploy" value="Next" />
-          <Metric icon={<Cloud size={20} />} label="Cloud apply" value="Locked" />
-          <Metric icon={<LockKeyhole size={20} />} label="Drift detection" value="Later" />
+          <PromotionRunbook analysis={analysis} ciProvider={ciProvider} />
+        </FocusedPanel>
+        <FocusedPanel kicker="Release package" title="Pipeline handoff checklist">
+          <PipelineHandoffChecklist analysis={analysis} pipelineFile={pipelineFile} />
+        </FocusedPanel>
+      </div>
+    </div>
+  );
+}
+
+function PipelineHandoffChecklist({ analysis, pipelineFile }: { analysis: Analysis | null; pipelineFile: GeneratedFile | undefined }) {
+  const checks = [
+    {
+      name: "Pipeline file",
+      status: pipelineFile ? "passed" as RuleStatus : "failed" as RuleStatus,
+      detail: pipelineFile ? `${pipelineFile.path} is selected for the current provider.` : "No pipeline file is selected yet."
+    },
+    {
+      name: "Blocking gates",
+      status: analysis?.promotionDecision?.status === "blocked" ? "failed" as RuleStatus : "passed" as RuleStatus,
+      detail: analysis?.promotionDecision?.message ?? "Analyze a repository to calculate release gates."
+    },
+    {
+      name: "Manual approvals",
+      status: "warning" as RuleStatus,
+      detail: "Cloud deployment still requires explicit credentials, environment, and Terraform approval."
+    }
+  ];
+
+  return (
+    <div className="handoff-list">
+      {checks.map((check) => (
+        <div key={check.name}>
+          {statusIcon(check.status)}
+          <div>
+            <strong>{check.name}</strong>
+            <span>{check.detail}</span>
+          </div>
         </div>
-        <PromotionRunbook analysis={analysis} ciProvider={ciProvider} />
-      </FocusedPanel>
+      ))}
     </div>
   );
 }

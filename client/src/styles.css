@@ -533,12 +533,27 @@ code {
   grid-column: 2;
 }
 
+.pipeline-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 0.96fr) minmax(0, 1.04fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.pipeline-left,
+.pipeline-right {
+  display: grid;
+  gap: 16px;
+  align-items: start;
+}
+
 .detail-list,
 .rule-list,
 .template-list,
 .pipeline-list,
 .generated-list,
-.runbook-list {
+.runbook-list,
+.handoff-list {
   display: grid;
   gap: 12px;
 }
@@ -573,6 +588,25 @@ code {
 }
 
 .runbook-item span {
+  color: #9fb3cd;
+}
+
+.handoff-list > div {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(126, 176, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(4, 9, 19, 0.48);
+}
+
+.handoff-list > div > div {
+  display: grid;
+  gap: 5px;
+}
+
+.handoff-list span {
   color: #9fb3cd;
 }
 
@@ -1381,6 +1415,7 @@ pre {
   }
 
   .paired-grid,
+  .pipeline-layout,
   .validation-command-grid,
   .evidence-list {
     grid-template-columns: 1fr;
