@@ -1650,6 +1650,86 @@ function InfraView({
       <FocusedPanel kicker="Terraform preview" title={`${cloudProvider.toUpperCase()} starter files`}>
         <GeneratedInfraFiles plan={plan} />
       </FocusedPanel>
+      <FocusedPanel kicker={`${cloudProvider.toUpperCase()} handoff`} title="Manual cloud inputs" className="wide-panel">
+        <CloudHandoffChecklist analysis={analysis} cloudProvider={cloudProvider} />
+      </FocusedPanel>
+    </div>
+  );
+}
+
+function CloudHandoffChecklist({ analysis, cloudProvider }: { analysis: Analysis; cloudProvider: "azure" | "aws" }) {
+  const services = analysis.stack.services ?? [];
+  const backend = services.find((service) => service.kind === "backend");
+  const frontend = services.find((service) => service.kind === "frontend");
+  const requiredEnv = analysis.stack.requiredEnv ?? [];
+
+  const cloudInputs =
+    cloudProvider === "aws"
+      ? [
+          "AWS account ID",
+          "AWS region",
+          "ECR backend repository URL",
+          "ECR frontend repository URL",
+          "EKS cluster name and namespace",
+          "RDS PostgreSQL endpoint",
+          "ACM certificate ARN",
+          "Route 53 hosted zone or external DNS target",
+          "Azure Pipelines AWS service connection"
+        ]
+      : [
+          "Azure subscription ID",
+          "Resource group",
+          "ACR login server",
+          "AKS cluster name and namespace",
+          "Azure PostgreSQL endpoint",
+          "Key Vault name",
+          "TLS certificate or ingress host",
+          "Azure Pipelines service connection"
+        ];
+
+  const secretInputs = ["DATABASE_URL", "TOKEN_SECRET", "CORS_ORIGIN"].filter((item) => requiredEnv.includes(item) || item !== "DATABASE_URL");
+
+  return (
+    <div className="cloud-handoff">
+      <div className="handoff-summary">
+        <div>
+          <Cloud size={18} />
+          <span>{cloudProvider === "aws" ? "Recommended runtime: EKS + ECR + RDS PostgreSQL" : "Recommended runtime: AKS + ACR + Azure PostgreSQL"}</span>
+        </div>
+        <div>
+          <LockKeyhole size={18} />
+          <span>Cloud apply stays locked until registry, domain, secrets, and credentials are mapped.</span>
+        </div>
+      </div>
+
+      <div className="handoff-columns">
+        <div>
+          <strong>Service map</strong>
+          <ul>
+            <li>{backend ? `${backend.serviceName}: ${backend.port}` : "Backend service pending"}</li>
+            <li>{frontend ? `${frontend.serviceName}: ${frontend.port}` : "Frontend service pending"}</li>
+            <li>{analysis.stack.databases.includes("PostgreSQL") ? "PostgreSQL backing service required" : "No managed database detected"}</li>
+          </ul>
+        </div>
+        <div>
+          <strong>Cloud values to collect</strong>
+          <ul>
+            {cloudInputs.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </div>
+        <div>
+          <strong>Deployment secrets</strong>
+          <ul>
+            {secretInputs.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+            <li>Public domain / ingress host</li>
+            <li>Immutable backend and frontend image tags</li>
+          </ul>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1961,6 +2041,16 @@ function statusIcon(status: RuleStatus) {
 }
 
 async function parseResponse(response: Response) {
+  const contentType = response.headers.get("content-type") ?? "";
+
+  if (!contentType.includes("application/json")) {
+    const body = await response.text();
+    const preview = body.replace(/\s+/g, " ").slice(0, 120);
+    throw new Error(
+      `PipelineForge API returned ${contentType || "a non-JSON response"}. Confirm the API is running on port 8095 and Vite is proxying /api correctly.${preview ? ` Preview: ${preview}` : ""}`
+    );
+  }
+
   const data = await response.json();
   if (!response.ok) {
     throw new Error(data.error ?? "Request failed.");
