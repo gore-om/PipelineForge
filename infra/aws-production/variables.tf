@@ -15,17 +15,23 @@ variable "aws_region" {
 
 variable "frontend_image_tag" {
   type        = string
-  description = "Frontend image tag pushed by Azure Pipelines."
+  description = "Frontend image tag pushed by Jenkins."
 }
 
 variable "api_image_tag" {
   type        = string
-  description = "API image tag pushed by Azure Pipelines."
+  description = "API image tag pushed by Jenkins."
 }
 
 variable "desired_count" {
   type    = number
   default = 1
+}
+
+variable "api_container_port" {
+  type        = number
+  default     = 8095
+  description = "Internal PipelineForge API container port."
 }
 
 variable "certificate_arn" {
@@ -59,4 +65,9 @@ variable "database_password" {
   type      = string
   default   = ""
   sensitive = true
+}
+
+variable "database_deletion_protection" {
+  type    = bool
+  default = true
 }

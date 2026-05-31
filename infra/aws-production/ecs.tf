@@ -59,15 +59,15 @@ resource "aws_ecs_task_definition" "api" {
       essential = true
       portMappings = [
         {
-          containerPort = 8080
-          hostPort      = 8080
+          containerPort = var.api_container_port
+          hostPort      = var.api_container_port
           protocol      = "tcp"
         }
       ]
       environment = [
         {
           name  = "PORT"
-          value = "8080"
+          value = tostring(var.api_container_port)
         },
         {
           name  = "ARTIFACT_BUCKET"
@@ -89,11 +89,17 @@ resource "aws_ecs_task_definition" "api" {
 }
 
 resource "aws_ecs_service" "frontend" {
-  name            = "${local.name_prefix}-frontend"
-  cluster         = aws_ecs_cluster.main.id
-  task_definition = aws_ecs_task_definition.frontend.arn
-  desired_count   = var.desired_count
-  launch_type     = "FARGATE"
+  name             = "${local.name_prefix}-frontend"
+  cluster          = aws_ecs_cluster.main.id
+  task_definition  = aws_ecs_task_definition.frontend.arn
+  desired_count    = var.desired_count
+  launch_type      = "FARGATE"
+  platform_version = "LATEST"
+
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
 
   network_configuration {
     subnets          = aws_subnet.public[*].id
@@ -113,11 +119,17 @@ resource "aws_ecs_service" "frontend" {
 }
 
 resource "aws_ecs_service" "api" {
-  name            = "${local.name_prefix}-api"
-  cluster         = aws_ecs_cluster.main.id
-  task_definition = aws_ecs_task_definition.api.arn
-  desired_count   = var.desired_count
-  launch_type     = "FARGATE"
+  name             = "${local.name_prefix}-api"
+  cluster          = aws_ecs_cluster.main.id
+  task_definition  = aws_ecs_task_definition.api.arn
+  desired_count    = var.desired_count
+  launch_type      = "FARGATE"
+  platform_version = "LATEST"
+
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
 
   network_configuration {
     subnets          = aws_subnet.public[*].id
@@ -128,7 +140,7 @@ resource "aws_ecs_service" "api" {
   load_balancer {
     target_group_arn = aws_lb_target_group.api.arn
     container_name   = local.api_container_name
-    container_port   = 8080
+    container_port   = var.api_container_port
   }
 
   depends_on = [aws_lb_listener.http]

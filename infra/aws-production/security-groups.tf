@@ -40,8 +40,8 @@ resource "aws_security_group" "ecs" {
   }
 
   ingress {
-    from_port       = 8080
-    to_port         = 8080
+    from_port       = var.api_container_port
+    to_port         = var.api_container_port
     protocol        = "tcp"
     security_groups = [aws_security_group.alb.id]
   }

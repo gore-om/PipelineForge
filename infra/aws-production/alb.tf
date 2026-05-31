@@ -29,7 +29,7 @@ resource "aws_lb_target_group" "frontend" {
 
 resource "aws_lb_target_group" "api" {
   name        = "${local.short_prefix}-api"
-  port        = 8080
+  port        = var.api_container_port
   protocol    = "HTTP"
   target_type = "ip"
   vpc_id      = aws_vpc.main.id

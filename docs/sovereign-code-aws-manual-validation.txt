@@ -177,16 +177,14 @@ pipelineforge-terraform-locks
 Do we need Jenkins EC2?
 ======================
 
-No, not if you use Azure Pipelines.
+Yes, if Jenkins is the selected CI/CD provider and you are not using an existing Jenkins controller.
 
-Use Jenkins EC2 only if you choose Jenkins as the CI/CD provider.
-
-For tomorrow's preferred flow:
-- CI/CD provider: Azure Pipelines
+For the preferred Jenkins flow:
+- CI/CD provider: Jenkins
 - Cloud provider: AWS
-- Jenkins EC2: not required
+- Jenkins controller or agent with Docker, AWS CLI, kubectl, and Terraform is required
 
-If testing Jenkins later, then create:
+Create or prepare:
 - 1 EC2 instance for Jenkins controller
 - IAM role or AWS credentials for ECR/EKS access
 - Docker installed on Jenkins
@@ -222,9 +220,9 @@ LOG_LEVEL
 
 CI/CD inputs
 ------------
-CI/CD provider: Azure Pipelines
-AWS service connection or credentials reference
-ECR service connection or AWS auth step
+CI/CD provider: Jenkins
+Jenkins AWS credential or instance profile
+ECR login step
 EKS deployment permission
 Manual approval environment name
 
@@ -422,7 +420,7 @@ Phase 6: Check pipeline stage
 Go to Pipeline.
 
 Preferred CI/CD provider:
-Azure Pipelines
+Jenkins
 
 Expected pipeline behavior:
 1. Checkout source.
@@ -524,7 +522,7 @@ PipelineForge passes tomorrow's manual test if:
 8. Deployment stays blocked before required inputs are supplied.
 9. Sandbox checks pass after required inputs are supplied.
 10. Generated files are service-aware.
-11. Azure Pipelines builds and pushes both images separately.
+11. Jenkins builds and pushes both images separately.
 12. AWS infra plan includes ECR, EKS, RDS PostgreSQL, secrets, ingress, HTTPS, IAM, and observability.
 13. Readiness report clearly explains what is missing and how to fix it.
 
@@ -568,7 +566,6 @@ Secrets:
 Kubernetes Secret for first manual test, then AWS Secrets Manager in the next production stage
 
 CI/CD:
-Azure Pipelines
+Jenkins
 
-Do not create Jenkins EC2 for tomorrow unless you specifically want to test the Jenkins path.
-
+Create Jenkins EC2 only if you do not already have a Jenkins controller/agent available.

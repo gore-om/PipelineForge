@@ -25,3 +25,8 @@ output "frontend_service_name" {
 output "api_service_name" {
   value = aws_ecs_service.api.name
 }
+
+output "database_endpoint" {
+  value     = var.create_database ? aws_db_instance.postgres[0].endpoint : null
+  sensitive = true
+}
