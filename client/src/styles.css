@@ -1129,6 +1129,31 @@ code {
   font-size: 0.94rem;
 }
 
+.release-bundle-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px solid rgba(93, 181, 255, 0.24);
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(16, 71, 170, 0.22), rgba(4, 9, 19, 0.62));
+}
+
+.release-bundle-card div {
+  display: grid;
+  gap: 5px;
+}
+
+.release-bundle-card strong {
+  color: #edf6ff;
+}
+
+.release-bundle-card span {
+  color: #a9c1df;
+}
+
 .deployment-inputs {
   display: grid;
   gap: 18px;
@@ -1534,6 +1559,7 @@ pre {
   .generated-list summary,
   .input-grid,
   .resolution-summary,
+  .release-bundle-card,
   .sandbox-actions,
   .action-item {
     grid-template-columns: 1fr;

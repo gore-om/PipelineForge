@@ -20,7 +20,7 @@ import {
   UserPlus,
   XCircle
 } from "lucide-react";
-import { type CSSProperties, type FormEvent, type ReactNode, useState } from "react";
+import { type CSSProperties, type FormEvent, type ReactNode, useEffect, useState } from "react";
 import type { Analysis, AutoFixResult, CloudPlan, RuleStatus, RuntimeToolchain, SandboxResult, SandboxStatus } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
@@ -73,9 +73,34 @@ function App() {
   const [isSecurityLoading, setIsSecurityLoading] = useState(false);
   const [isAutoFixLoading, setIsAutoFixLoading] = useState(false);
   const [isToolchainLoading, setIsToolchainLoading] = useState(false);
+  const [isBundleLoading, setIsBundleLoading] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const currentGeneratedFiles = analysis ? applyGeneratedOverrides(resolveGeneratedFiles(analysis, deploymentInputs), generatedFileOverrides) : [];
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadProjectHistory() {
+      try {
+        const response = await fetch(`${API_BASE}/api/projects`);
+        const records = await parseResponse(response) as Analysis[];
+        if (!cancelled) {
+          setRecentAnalyses(records.slice(0, 5));
+        }
+      } catch {
+        if (!cancelled) {
+          setRecentAnalyses([]);
+        }
+      }
+    }
+
+    void loadProjectHistory();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function analyzeGithub(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -254,6 +279,42 @@ function App() {
     setSecurityResult(null);
   }
 
+  async function downloadReleaseBundle() {
+    if (!analysis) return;
+
+    setIsBundleLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetch(`${API_BASE}/api/release-bundle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          analysis,
+          files: currentGeneratedFiles,
+          deploymentInputs
+        })
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({ error: "Release bundle export failed." }));
+        throw new Error(data.error ?? "Release bundle export failed.");
+      }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${safeFileName(analysis.repoName)}-release-bundle.zip`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Release bundle export failed.");
+    } finally {
+      setIsBundleLoading(false);
+    }
+  }
+
   if (!isAuthenticated) {
     return (
     <main className="shell">
@@ -407,7 +468,7 @@ function App() {
           />
         ) : null}
         {activeStep === "generate" ? (
-          <GenerationView analysis={analysis} generatedFiles={currentGeneratedFiles} />
+          <GenerationView analysis={analysis} generatedFiles={currentGeneratedFiles} isBundleLoading={isBundleLoading} onDownloadBundle={downloadReleaseBundle} />
         ) : null}
         {activeStep === "infra" ? <InfraView analysis={analysis} cloudProvider={cloudProvider} onCloudProviderChange={setCloudProvider} /> : null}
         {activeStep === "pipeline" ? <PipelineView analysis={analysis} ciProvider={ciProvider} onCiProviderChange={setCiProvider} /> : null}
@@ -985,10 +1046,14 @@ function recommendationStep(item: string): WorkflowStep {
 
 function GenerationView({
   analysis,
-  generatedFiles
+  generatedFiles,
+  isBundleLoading,
+  onDownloadBundle
 }: {
   analysis: Analysis | null;
   generatedFiles: GeneratedFile[];
+  isBundleLoading: boolean;
+  onDownloadBundle: () => void;
 }) {
   const readyCount = generatedFiles.filter((file) => file.status === "ready").length;
   const needsInputCount = generatedFiles.filter((file) => file.status === "needs-input").length;
@@ -1001,6 +1066,15 @@ function GenerationView({
           <Metric icon={<Settings2 size={20} />} label="Needs input" value={needsInputCount.toString()} />
         </div>
         <p className="panel-note">Resolve production inputs in Validate, then return here to preview and export deployable files.</p>
+        <div className="release-bundle-card">
+          <div>
+            <strong>Release bundle</strong>
+            <span>Download generated files, readiness report, manifest, and redacted deployment inputs as one ZIP package.</span>
+          </div>
+          <button className="primary-button" type="button" disabled={!analysis || !generatedFiles.length || isBundleLoading} onClick={onDownloadBundle}>
+            {isBundleLoading ? "Packaging..." : "Download bundle"}
+          </button>
+        </div>
         <GeneratedFiles files={generatedFiles} />
       </FocusedPanel>
       <FocusedPanel kicker="Blueprint plan" title="Why these files were selected">

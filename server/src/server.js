@@ -3,11 +3,13 @@ import express from "express";
 import multer from "multer";
 import AdmZip from "adm-zip";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 const app = express();
+const dataDir = process.env.PIPELINEFORGE_DATA_DIR || path.join(process.cwd(), ".pipelineforge-data");
+const analysisDir = path.join(dataDir, "analyses");
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
@@ -22,6 +24,10 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", service: "PipelineForge API" });
 });
 
+app.get("/api/projects", async (_req, res) => {
+  res.json(await listAnalysisRecords());
+});
+
 app.post("/api/analyze/github", (req, res) => {
   const { url } = req.body;
 
@@ -30,17 +36,18 @@ app.post("/api/analyze/github", (req, res) => {
   }
 
   const name = url.split("/").filter(Boolean).slice(-2).join("/");
-  res.json(
-    buildAnalysis({
-      source: "github",
-      repoName: name,
-      files: [],
-      packageJson: null,
-      fileContents: new Map(),
-      code: "",
-      githubUrl: url
-    })
-  );
+  const analysis = buildAnalysis({
+    source: "github",
+    repoName: name,
+    files: [],
+    packageJson: null,
+    fileContents: new Map(),
+    code: "",
+    githubUrl: url
+  });
+
+  persistAnalysisRecord(analysis).catch((error) => console.error("Could not persist analysis record", error));
+  res.json(analysis);
 });
 
 app.post("/api/analyze/upload", upload.single("repo"), (req, res) => {
@@ -61,17 +68,18 @@ app.post("/api/analyze/upload", upload.single("repo"), (req, res) => {
     const fileContents = readTextEntries(entries);
     const codeSample = readCodeSample(entries);
 
-    res.json(
-      buildAnalysis({
-        source: "upload",
-        repoName: req.file.originalname.replace(/\.zip$/i, ""),
-        files,
-        packageJson,
-        fileContents,
-        code: codeSample,
-        githubUrl: null
-      })
-    );
+    const analysis = buildAnalysis({
+      source: "upload",
+      repoName: req.file.originalname.replace(/\.zip$/i, ""),
+      files,
+      packageJson,
+      fileContents,
+      code: codeSample,
+      githubUrl: null
+    });
+
+    persistAnalysisRecord(analysis).catch((error) => console.error("Could not persist analysis record", error));
+    res.json(analysis);
   } catch (error) {
     res.status(400).json({ error: "Could not read ZIP archive.", detail: error.message });
   }
@@ -121,9 +129,58 @@ app.post("/api/autofix/preview", (req, res) => {
   res.json(previewAutoFixes(files));
 });
 
+app.post("/api/release-bundle", (req, res) => {
+  const { analysis, files = [], deploymentInputs = {} } = req.body;
+
+  if (!analysis || typeof analysis !== "object") {
+    return res.status(400).json({ error: "Provide an analysis object for release bundle export." });
+  }
+
+  if (!Array.isArray(files) || files.length === 0) {
+    return res.status(400).json({ error: "Provide generated files for release bundle export." });
+  }
+
+  const zip = buildReleaseBundle({ analysis, files, deploymentInputs });
+  const fileName = `${safeArchiveName(analysis.repoName ?? "pipelineforge-release")}-release-bundle.zip`;
+
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+  res.send(zip.toBuffer());
+});
+
 app.get("/api/runtime/toolchain", async (_req, res) => {
   res.json(await inspectRuntimeToolchain());
 });
+
+async function persistAnalysisRecord(analysis) {
+  await mkdir(analysisDir, { recursive: true });
+  const savedAt = new Date().toISOString();
+  const record = { ...analysis, savedAt };
+  const fileName = `${safeArchiveName(analysis.repoName)}-${Date.now()}.json`;
+  await writeFile(path.join(analysisDir, fileName), JSON.stringify(record, null, 2));
+}
+
+async function listAnalysisRecords() {
+  try {
+    await mkdir(analysisDir, { recursive: true });
+    const entries = await readdir(analysisDir, { withFileTypes: true });
+    const records = await Promise.all(
+      entries
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+        .map(async (entry) => {
+          const content = await readFile(path.join(analysisDir, entry.name), "utf8");
+          return JSON.parse(content);
+        })
+    );
+
+    return records
+      .sort((a, b) => String(b.savedAt ?? b.generatedAt).localeCompare(String(a.savedAt ?? a.generatedAt)))
+      .slice(0, 10);
+  } catch (error) {
+    console.error("Could not list analysis records", error);
+    return [];
+  }
+}
 
 function buildAnalysis({ source, repoName, files, packageJson, fileContents = new Map(), code, githubUrl }) {
   const stack = detectStack(files, packageJson, githubUrl, code, fileContents);
@@ -679,6 +736,100 @@ function autoFixIngressTls(content) {
     `        - ${host}`,
     "      secretName: pipelineforge-app-tls"
   ].join("\n");
+}
+
+function buildReleaseBundle({ analysis, files, deploymentInputs }) {
+  const zip = new AdmZip();
+  const resolvedFiles = materializeDeploymentInputs(files, deploymentInputs);
+  const readinessReport = buildReleaseReadinessReport(analysis, resolvedFiles);
+  const manifest = buildReleaseManifest(analysis, resolvedFiles, deploymentInputs);
+
+  zip.addFile("README.md", Buffer.from(readinessReport, "utf8"));
+  zip.addFile("pipelineforge-manifest.json", Buffer.from(JSON.stringify(manifest, null, 2), "utf8"));
+  zip.addFile("deployment-inputs.redacted.json", Buffer.from(JSON.stringify(redactDeploymentInputs(deploymentInputs), null, 2), "utf8"));
+
+  for (const file of resolvedFiles) {
+    zip.addFile(`generated/${sanitizeArchivePath(file.path)}`, Buffer.from(file.content ?? "", "utf8"));
+  }
+
+  return zip;
+}
+
+function buildReleaseReadinessReport(analysis, files) {
+  const decision = analysis.promotionDecision ?? {};
+  const breakdown = analysis.scoreBreakdown ?? {};
+  const services = analysis.stack?.services ?? [];
+  const unresolved = files.filter((file) => file.status !== "ready");
+
+  return [
+    "# PipelineForge Release Bundle",
+    "",
+    `Repository: ${analysis.repoName ?? "Unknown"}`,
+    `Source: ${analysis.source ?? "Unknown"}`,
+    `Score: ${analysis.score ?? "Unknown"}/${breakdown.maxScore ?? 100}`,
+    `Decision: ${decision.title ?? "Pending review"}`,
+    `Generated: ${new Date().toISOString()}`,
+    "",
+    "## Stack",
+    `- Runtime: ${(analysis.stack?.runtime ?? []).join(", ") || "Unknown"}`,
+    `- Frameworks: ${(analysis.stack?.frameworks ?? []).join(", ") || "Unknown"}`,
+    `- Package manager: ${analysis.stack?.packageManager ?? "Unknown"}`,
+    `- Port: ${analysis.stack?.port ?? "Unknown"}`,
+    `- Databases: ${(analysis.stack?.databases ?? []).join(", ") || "None detected"}`,
+    "",
+    "## Services",
+    ...(services.length ? services.map((service) => `- ${service.serviceName}: ${service.kind}, port ${service.port}, path ${service.path}`) : ["- No service topology detected."]),
+    "",
+    "## Promotion Decision",
+    `- Status: ${decision.status ?? "review"}`,
+    `- Message: ${decision.message ?? "Review generated files before release."}`,
+    "",
+    "## Unresolved Files",
+    ...(unresolved.length ? unresolved.map((file) => `- ${file.path}: ${file.status}`) : ["- None. All generated files are marked ready."]),
+    "",
+    "## Generated Files",
+    ...files.map((file) => `- generated/${file.path}: ${file.status} - ${file.purpose}`),
+    "",
+    "## Next Gate",
+    "Run sandbox validation, runtime dry-runs, security gates, and cloud credential checks before production apply."
+  ].join("\n");
+}
+
+function buildReleaseManifest(analysis, files, deploymentInputs) {
+  return {
+    bundleVersion: 1,
+    repoName: analysis.repoName,
+    source: analysis.source,
+    generatedAt: new Date().toISOString(),
+    score: analysis.score,
+    promotionDecision: analysis.promotionDecision,
+    stack: analysis.stack,
+    validations: analysis.validations,
+    deploymentInputs: redactDeploymentInputs(deploymentInputs),
+    files: files.map(({ path, purpose, status }) => ({ path: `generated/${path}`, purpose, status }))
+  };
+}
+
+function redactDeploymentInputs(inputs = {}) {
+  return Object.fromEntries(
+    Object.entries(inputs).map(([key, value]) => {
+      const isSensitive = /secret|password|token|databaseUrl/i.test(key);
+      const stringValue = String(value ?? "");
+      return [key, isSensitive && stringValue ? "<redacted>" : stringValue];
+    })
+  );
+}
+
+function sanitizeArchivePath(filePath) {
+  return String(filePath ?? "generated-file.txt")
+    .replaceAll("\\", "/")
+    .split("/")
+    .filter((part) => part && part !== "." && part !== "..")
+    .join("/") || "generated-file.txt";
+}
+
+function safeArchiveName(name) {
+  return String(name).replace(/[^a-z0-9._-]+/gi, "-").replace(/^-|-$/g, "") || "pipelineforge";
 }
 
 function runSandboxValidation({ files, deploymentInputs, repoName }) {

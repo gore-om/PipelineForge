@@ -17,6 +17,8 @@ PipelineForge is a production-ready DevOps bootstrap and validation platform. It
 - Score explanation and path-to-100 recommendations
 - Deployment input resolution for registry, domain, database URL, token secret, and CORS origin
 - Generated Docker, Compose, Kubernetes, Jenkins, and Azure Pipelines assets
+- Release bundle ZIP export with generated files, manifest, readiness report, and redacted deployment inputs
+- Backend project-history persistence for recent analyses
 - Static sandbox validation and security gate previews
 - AWS/Azure infra planner and manual deployment handoff checklist
 
