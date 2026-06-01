@@ -29,6 +29,11 @@ app.get("/api/projects", async (_req, res) => {
   res.json(await listAnalysisRecords());
 });
 
+app.delete("/api/projects", async (_req, res) => {
+  const deleted = await clearAnalysisRecords();
+  res.json({ status: "cleared", deleted });
+});
+
 app.get("/api/privacy/status", (_req, res) => {
   res.json(buildPrivacyStatus());
 });
@@ -205,6 +210,20 @@ async function listAnalysisRecords() {
   } catch (error) {
     console.error("Could not list analysis records", error);
     return [];
+  }
+}
+
+async function clearAnalysisRecords() {
+  try {
+    await mkdir(analysisDir, { recursive: true });
+    const entries = await readdir(analysisDir, { withFileTypes: true });
+    const jsonFiles = entries.filter((entry) => entry.isFile() && entry.name.endsWith(".json"));
+
+    await Promise.all(jsonFiles.map((entry) => rm(path.join(analysisDir, entry.name), { force: true })));
+    return jsonFiles.length;
+  } catch (error) {
+    console.error("Could not clear analysis records", error);
+    return 0;
   }
 }
 

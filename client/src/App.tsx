@@ -110,6 +110,7 @@ function App() {
   const [isAutoFixLoading, setIsAutoFixLoading] = useState(false);
   const [isToolchainLoading, setIsToolchainLoading] = useState(false);
   const [isBundleLoading, setIsBundleLoading] = useState(false);
+  const [isClearingHistory, setIsClearingHistory] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const currentGeneratedFiles = analysis ? applyGeneratedOverrides(resolveGeneratedFiles(analysis, deploymentInputs), generatedFileOverrides) : [];
@@ -146,6 +147,22 @@ function App() {
       setPrivacyStatus(await parseResponse(response) as PrivacyStatus);
     } catch {
       setPrivacyStatus(null);
+    }
+  }
+
+  async function clearAnalysisHistory() {
+    setIsClearingHistory(true);
+    setError(null);
+
+    try {
+      const response = await fetch(`${API_BASE}/api/projects`, { method: "DELETE" });
+      await parseResponse(response);
+      setRecentAnalyses([]);
+      await loadPrivacyStatus();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Could not clear analysis history.");
+    } finally {
+      setIsClearingHistory(false);
     }
   }
 
@@ -497,7 +514,7 @@ function App() {
                 <span><CheckCircle2 size={17} /> Jenkins stage readiness</span>
               </div>
               <RecentAnalyses analyses={recentAnalyses} onReopen={reopenAnalysis} />
-              <RepositoryTrustPanel privacyStatus={privacyStatus} />
+              <RepositoryTrustPanel isClearing={isClearingHistory} onClearHistory={clearAnalysisHistory} privacyStatus={privacyStatus} />
             </div>
           </section>
         ) : null}
@@ -686,10 +703,23 @@ function RecentAnalyses({ analyses, onReopen }: { analyses: Analysis[]; onReopen
   );
 }
 
-function RepositoryTrustPanel({ privacyStatus }: { privacyStatus: PrivacyStatus | null }) {
+function RepositoryTrustPanel({
+  isClearing,
+  onClearHistory,
+  privacyStatus
+}: {
+  isClearing: boolean;
+  onClearHistory: () => void;
+  privacyStatus: PrivacyStatus | null;
+}) {
   return (
     <div className="trust-panel">
-      <strong>Repository privacy posture</strong>
+      <div className="trust-heading">
+        <strong>Repository privacy posture</strong>
+        <button className="ghost-button" disabled={isClearing || privacyStatus?.analysisPersistence === "disabled"} type="button" onClick={onClearHistory}>
+          {isClearing ? "Clearing..." : "Clear history"}
+        </button>
+      </div>
       <span>
         {privacyStatus
           ? `${privacyStatus.uploadHandling}. ${privacyStatus.secretHandling}. Analysis persistence is ${privacyStatus.analysisPersistence}.`
@@ -1673,10 +1703,6 @@ function SecurityGatePanel({
 }) {
   const canAutoFix = Boolean(result?.checks.some((check) => check.status === "warning" || check.status === "failed"));
   const [showAutoFixResult, setShowAutoFixResult] = useState(false);
-
-  useEffect(() => {
-    if (autoFixResult) setShowAutoFixResult(true);
-  }, [autoFixResult]);
 
   return (
     <div className="validation-action-card">

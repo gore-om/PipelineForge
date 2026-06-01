@@ -1086,6 +1086,18 @@ code {
   background: rgba(4, 9, 19, 0.48);
 }
 
+.trust-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.trust-heading .ghost-button {
+  min-height: 34px;
+  padding: 0 11px;
+}
+
 .trust-panel strong {
   color: #f7fbff;
 }
