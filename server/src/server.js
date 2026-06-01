@@ -3,11 +3,13 @@ import express from "express";
 import multer from "multer";
 import AdmZip from "adm-zip";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 const app = express();
+const dataDir = process.env.PIPELINEFORGE_DATA_DIR || path.join(process.cwd(), ".pipelineforge-data");
+const analysisDir = path.join(dataDir, "analyses");
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
@@ -22,6 +24,10 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", service: "PipelineForge API" });
 });
 
+app.get("/api/projects", async (_req, res) => {
+  res.json(await listAnalysisRecords());
+});
+
 app.post("/api/analyze/github", (req, res) => {
   const { url } = req.body;
 
@@ -30,17 +36,18 @@ app.post("/api/analyze/github", (req, res) => {
   }
 
   const name = url.split("/").filter(Boolean).slice(-2).join("/");
-  res.json(
-    buildAnalysis({
-      source: "github",
-      repoName: name,
-      files: [],
-      packageJson: null,
-      fileContents: new Map(),
-      code: "",
-      githubUrl: url
-    })
-  );
+  const analysis = buildAnalysis({
+    source: "github",
+    repoName: name,
+    files: [],
+    packageJson: null,
+    fileContents: new Map(),
+    code: "",
+    githubUrl: url
+  });
+
+  persistAnalysisRecord(analysis).catch((error) => console.error("Could not persist analysis record", error));
+  res.json(analysis);
 });
 
 app.post("/api/analyze/upload", upload.single("repo"), (req, res) => {
@@ -61,17 +68,18 @@ app.post("/api/analyze/upload", upload.single("repo"), (req, res) => {
     const fileContents = readTextEntries(entries);
     const codeSample = readCodeSample(entries);
 
-    res.json(
-      buildAnalysis({
-        source: "upload",
-        repoName: req.file.originalname.replace(/\.zip$/i, ""),
-        files,
-        packageJson,
-        fileContents,
-        code: codeSample,
-        githubUrl: null
-      })
-    );
+    const analysis = buildAnalysis({
+      source: "upload",
+      repoName: req.file.originalname.replace(/\.zip$/i, ""),
+      files,
+      packageJson,
+      fileContents,
+      code: codeSample,
+      githubUrl: null
+    });
+
+    persistAnalysisRecord(analysis).catch((error) => console.error("Could not persist analysis record", error));
+    res.json(analysis);
   } catch (error) {
     res.status(400).json({ error: "Could not read ZIP archive.", detail: error.message });
   }
@@ -121,9 +129,58 @@ app.post("/api/autofix/preview", (req, res) => {
   res.json(previewAutoFixes(files));
 });
 
+app.post("/api/release-bundle", (req, res) => {
+  const { analysis, files = [], deploymentInputs = {} } = req.body;
+
+  if (!analysis || typeof analysis !== "object") {
+    return res.status(400).json({ error: "Provide an analysis object for release bundle export." });
+  }
+
+  if (!Array.isArray(files) || files.length === 0) {
+    return res.status(400).json({ error: "Provide generated files for release bundle export." });
+  }
+
+  const zip = buildReleaseBundle({ analysis, files, deploymentInputs });
+  const fileName = `${safeArchiveName(analysis.repoName ?? "pipelineforge-release")}-release-bundle.zip`;
+
+  res.setHeader("Content-Type", "application/zip");
+  res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+  res.send(zip.toBuffer());
+});
+
 app.get("/api/runtime/toolchain", async (_req, res) => {
   res.json(await inspectRuntimeToolchain());
 });
+
+async function persistAnalysisRecord(analysis) {
+  await mkdir(analysisDir, { recursive: true });
+  const savedAt = new Date().toISOString();
+  const record = { ...analysis, savedAt };
+  const fileName = `${safeArchiveName(analysis.repoName)}-${Date.now()}.json`;
+  await writeFile(path.join(analysisDir, fileName), JSON.stringify(record, null, 2));
+}
+
+async function listAnalysisRecords() {
+  try {
+    await mkdir(analysisDir, { recursive: true });
+    const entries = await readdir(analysisDir, { withFileTypes: true });
+    const records = await Promise.all(
+      entries
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+        .map(async (entry) => {
+          const content = await readFile(path.join(analysisDir, entry.name), "utf8");
+          return JSON.parse(content);
+        })
+    );
+
+    return records
+      .sort((a, b) => String(b.savedAt ?? b.generatedAt).localeCompare(String(a.savedAt ?? a.generatedAt)))
+      .slice(0, 10);
+  } catch (error) {
+    console.error("Could not list analysis records", error);
+    return [];
+  }
+}
 
 function buildAnalysis({ source, repoName, files, packageJson, fileContents = new Map(), code, githubUrl }) {
   const stack = detectStack(files, packageJson, githubUrl, code, fileContents);
@@ -681,6 +738,100 @@ function autoFixIngressTls(content) {
   ].join("\n");
 }
 
+function buildReleaseBundle({ analysis, files, deploymentInputs }) {
+  const zip = new AdmZip();
+  const resolvedFiles = materializeDeploymentInputs(files, deploymentInputs);
+  const readinessReport = buildReleaseReadinessReport(analysis, resolvedFiles);
+  const manifest = buildReleaseManifest(analysis, resolvedFiles, deploymentInputs);
+
+  zip.addFile("README.md", Buffer.from(readinessReport, "utf8"));
+  zip.addFile("pipelineforge-manifest.json", Buffer.from(JSON.stringify(manifest, null, 2), "utf8"));
+  zip.addFile("deployment-inputs.redacted.json", Buffer.from(JSON.stringify(redactDeploymentInputs(deploymentInputs), null, 2), "utf8"));
+
+  for (const file of resolvedFiles) {
+    zip.addFile(`generated/${sanitizeArchivePath(file.path)}`, Buffer.from(file.content ?? "", "utf8"));
+  }
+
+  return zip;
+}
+
+function buildReleaseReadinessReport(analysis, files) {
+  const decision = analysis.promotionDecision ?? {};
+  const breakdown = analysis.scoreBreakdown ?? {};
+  const services = analysis.stack?.services ?? [];
+  const unresolved = files.filter((file) => file.status !== "ready");
+
+  return [
+    "# PipelineForge Release Bundle",
+    "",
+    `Repository: ${analysis.repoName ?? "Unknown"}`,
+    `Source: ${analysis.source ?? "Unknown"}`,
+    `Score: ${analysis.score ?? "Unknown"}/${breakdown.maxScore ?? 100}`,
+    `Decision: ${decision.title ?? "Pending review"}`,
+    `Generated: ${new Date().toISOString()}`,
+    "",
+    "## Stack",
+    `- Runtime: ${(analysis.stack?.runtime ?? []).join(", ") || "Unknown"}`,
+    `- Frameworks: ${(analysis.stack?.frameworks ?? []).join(", ") || "Unknown"}`,
+    `- Package manager: ${analysis.stack?.packageManager ?? "Unknown"}`,
+    `- Port: ${analysis.stack?.port ?? "Unknown"}`,
+    `- Databases: ${(analysis.stack?.databases ?? []).join(", ") || "None detected"}`,
+    "",
+    "## Services",
+    ...(services.length ? services.map((service) => `- ${service.serviceName}: ${service.kind}, port ${service.port}, path ${service.path}`) : ["- No service topology detected."]),
+    "",
+    "## Promotion Decision",
+    `- Status: ${decision.status ?? "review"}`,
+    `- Message: ${decision.message ?? "Review generated files before release."}`,
+    "",
+    "## Unresolved Files",
+    ...(unresolved.length ? unresolved.map((file) => `- ${file.path}: ${file.status}`) : ["- None. All generated files are marked ready."]),
+    "",
+    "## Generated Files",
+    ...files.map((file) => `- generated/${file.path}: ${file.status} - ${file.purpose}`),
+    "",
+    "## Next Gate",
+    "Run sandbox validation, runtime dry-runs, security gates, and cloud credential checks before production apply."
+  ].join("\n");
+}
+
+function buildReleaseManifest(analysis, files, deploymentInputs) {
+  return {
+    bundleVersion: 1,
+    repoName: analysis.repoName,
+    source: analysis.source,
+    generatedAt: new Date().toISOString(),
+    score: analysis.score,
+    promotionDecision: analysis.promotionDecision,
+    stack: analysis.stack,
+    validations: analysis.validations,
+    deploymentInputs: redactDeploymentInputs(deploymentInputs),
+    files: files.map(({ path, purpose, status }) => ({ path: `generated/${path}`, purpose, status }))
+  };
+}
+
+function redactDeploymentInputs(inputs = {}) {
+  return Object.fromEntries(
+    Object.entries(inputs).map(([key, value]) => {
+      const isSensitive = /secret|password|token|databaseUrl/i.test(key);
+      const stringValue = String(value ?? "");
+      return [key, isSensitive && stringValue ? "<redacted>" : stringValue];
+    })
+  );
+}
+
+function sanitizeArchivePath(filePath) {
+  return String(filePath ?? "generated-file.txt")
+    .replaceAll("\\", "/")
+    .split("/")
+    .filter((part) => part && part !== "." && part !== "..")
+    .join("/") || "generated-file.txt";
+}
+
+function safeArchiveName(name) {
+  return String(name).replace(/[^a-z0-9._-]+/gi, "-").replace(/^-|-$/g, "") || "pipelineforge";
+}
+
 function runSandboxValidation({ files, deploymentInputs, repoName }) {
   const resolvedFiles = materializeDeploymentInputs(files, deploymentInputs);
   const fileMap = new Map(resolvedFiles.map((file) => [file.path, file]));
@@ -691,6 +842,8 @@ function runSandboxValidation({ files, deploymentInputs, repoName }) {
     validateKubernetesDeployment(fileMap, deploymentInputs),
     validateKubernetesService(fileMap),
     validateKubernetesIngress(fileMap, deploymentInputs),
+    validateEcsTaskDefinition(fileMap),
+    validateEcsService(fileMap),
     validateAzurePipeline(fileMap),
     validateJenkinsPipeline(fileMap)
   ];
@@ -717,12 +870,14 @@ function sandboxCheck(name, status, message, command) {
 function materializeDeploymentInputs(files, deploymentInputs = {}) {
   const registry = String(deploymentInputs.imageRegistry ?? "").trim().replace(/\/$/, "");
   const domain = String(deploymentInputs.domain ?? "").trim();
+  const imageTag = String(deploymentInputs.imageTag ?? "").trim() || "latest";
   return files.map((file) => {
     let content = file.content ?? "";
     if (registry) {
       content = content
         .replaceAll("REPLACE_WITH_REGISTRY", registry)
-        .replaceAll("REPLACE_WITH_ACR_OR_ECR_SERVICE_CONNECTION", registry);
+        .replaceAll("REPLACE_WITH_ACR_OR_ECR_SERVICE_CONNECTION", registry)
+        .replaceAll("REPLACE_WITH_IMAGE_TAG", imageTag);
     }
     if (domain) content = content.replaceAll("REPLACE_WITH_DOMAIN", domain);
     const inputAliases = {
@@ -734,8 +889,30 @@ function materializeDeploymentInputs(files, deploymentInputs = {}) {
       const value = String(inputAliases[key].map((alias) => deploymentInputs[alias]).find(Boolean) ?? "").trim();
       if (value) content = content.replaceAll(`REPLACE_WITH_${key}`, value);
     }
+    content = materializeEcsInputs(content, deploymentInputs);
     return { ...file, content };
   });
+}
+
+function materializeEcsInputs(content, deploymentInputs = {}) {
+  const subnetIds = String(deploymentInputs.ecsSubnetIds ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  let resolved = content
+    .replaceAll("REPLACE_WITH_AWS_REGION", String(deploymentInputs.awsRegion ?? "").trim() || "REPLACE_WITH_AWS_REGION")
+    .replaceAll("REPLACE_WITH_ECS_CLUSTER_ARN", String(deploymentInputs.ecsClusterArn ?? "").trim() || "REPLACE_WITH_ECS_CLUSTER_ARN")
+    .replaceAll("REPLACE_WITH_ECS_TASK_EXECUTION_ROLE_ARN", String(deploymentInputs.ecsTaskExecutionRoleArn ?? "").trim() || "REPLACE_WITH_ECS_TASK_EXECUTION_ROLE_ARN")
+    .replaceAll("REPLACE_WITH_ECS_TASK_ROLE_ARN", String(deploymentInputs.ecsTaskRoleArn ?? "").trim() || "REPLACE_WITH_ECS_TASK_ROLE_ARN")
+    .replaceAll("REPLACE_WITH_TASK_DEFINITION", String(deploymentInputs.ecsTaskDefinition ?? "").trim() || "REPLACE_WITH_TASK_DEFINITION")
+    .replaceAll("REPLACE_WITH_ECS_SERVICE_SECURITY_GROUP_ID", String(deploymentInputs.ecsSecurityGroupId ?? "").trim() || "REPLACE_WITH_ECS_SERVICE_SECURITY_GROUP_ID")
+    .replaceAll("REPLACE_WITH_FRONTEND_TARGET_GROUP_ARN", String(deploymentInputs.ecsTargetGroupArn ?? "").trim() || "REPLACE_WITH_FRONTEND_TARGET_GROUP_ARN");
+
+  if (subnetIds[0]) resolved = resolved.replaceAll("REPLACE_WITH_PRIVATE_SUBNET_ID_1", subnetIds[0]);
+  if (subnetIds[1]) resolved = resolved.replaceAll("REPLACE_WITH_PRIVATE_SUBNET_ID_2", subnetIds[1]);
+
+  return resolved;
 }
 
 function validateDockerfile(fileMap) {
@@ -818,6 +995,70 @@ function validateKubernetesIngress(fileMap, deploymentInputs) {
   if (!hasDomain) return sandboxCheck("Ingress route", "warning", "Ingress host must be set before HTTPS exposure.", "kubectl apply --dry-run=client -f k8s/ingress.yaml");
   if (!hasService) return sandboxCheck("Ingress route", "failed", "Ingress must map to a service.", "kubectl apply --dry-run=client -f k8s/ingress.yaml");
   return sandboxCheck("Ingress route", "passed", "Ingress host and service mapping are ready for dry-run validation.", "kubectl apply --dry-run=client -f k8s/ingress.yaml");
+}
+
+function validateEcsTaskDefinition(fileMap) {
+  const file = fileMap.get("ecs/task-definition.json");
+  if (!file) return sandboxCheck("ECS task definition", "skipped", "ECS task definition was not generated.", "aws ecs register-task-definition --cli-input-json");
+
+  const parsed = parseJsonConfig(file.content);
+  if (!parsed.ok) return sandboxCheck("ECS task definition", "failed", "ECS task definition is not valid JSON.", "aws ecs register-task-definition --cli-input-json");
+
+  const task = parsed.value;
+  const content = file.content ?? "";
+  const placeholders = findPlaceholders(content);
+  const containers = Array.isArray(task.containerDefinitions) ? task.containerDefinitions : [];
+  const hasFargate = Array.isArray(task.requiresCompatibilities) && task.requiresCompatibilities.includes("FARGATE");
+  const hasAwsvpc = task.networkMode === "awsvpc";
+  const hasRoles = Boolean(task.executionRoleArn && task.taskRoleArn);
+  const hasImages = containers.length > 0 && containers.every((container) => typeof container.image === "string" && !container.image.includes("REPLACE_WITH"));
+  const hasPorts = containers.every((container) => Array.isArray(container.portMappings) && container.portMappings.some((port) => Number(port.containerPort) > 0));
+  const backend = containers.find((container) => String(container.name ?? "").includes("backend"));
+  const hasSecrets = !backend || (Array.isArray(backend.secrets) && ["DATABASE_URL", "TOKEN_SECRET", "CORS_ORIGIN"].every((name) => backend.secrets.some((secret) => secret.name === name)));
+
+  if (placeholders.length) return sandboxCheck("ECS task definition", "failed", `Resolve ECS placeholders: ${placeholders.join(", ")}.`, "aws ecs register-task-definition --cli-input-json ecs/task-definition.json");
+  if (!hasFargate || !hasAwsvpc) return sandboxCheck("ECS task definition", "failed", "Task definition must use FARGATE and awsvpc networking.", "aws ecs register-task-definition --cli-input-json ecs/task-definition.json");
+  if (!hasRoles) return sandboxCheck("ECS task definition", "failed", "Task execution role and task role are required.", "aws ecs register-task-definition --cli-input-json ecs/task-definition.json");
+  if (!hasImages || !hasPorts) return sandboxCheck("ECS task definition", "failed", "Each ECS container needs a resolved image and container port.", "aws ecs register-task-definition --cli-input-json ecs/task-definition.json");
+  if (!hasSecrets) return sandboxCheck("ECS task secrets", "warning", "Backend should receive DATABASE_URL, TOKEN_SECRET, and CORS_ORIGIN from Secrets Manager.", "aws ecs register-task-definition --cli-input-json ecs/task-definition.json");
+
+  return sandboxCheck("ECS task definition", "passed", "Fargate task definition has resolved images, roles, ports, and runtime secrets.", "aws ecs register-task-definition --cli-input-json ecs/task-definition.json");
+}
+
+function validateEcsService(fileMap) {
+  const file = fileMap.get("ecs/service.json");
+  if (!file) return sandboxCheck("ECS service", "skipped", "ECS service definition was not generated.", "aws ecs create-service --cli-input-json");
+
+  const parsed = parseJsonConfig(file.content);
+  if (!parsed.ok) return sandboxCheck("ECS service", "failed", "ECS service definition is not valid JSON.", "aws ecs create-service --cli-input-json");
+
+  const service = parsed.value;
+  const placeholders = findPlaceholders(file.content ?? "");
+  const subnets = service.networkConfiguration?.awsvpcConfiguration?.subnets ?? [];
+  const securityGroups = service.networkConfiguration?.awsvpcConfiguration?.securityGroups ?? [];
+  const loadBalancers = service.loadBalancers ?? [];
+  const hasCircuitBreaker = Boolean(service.deploymentConfiguration?.deploymentCircuitBreaker?.enable);
+
+  if (placeholders.length) return sandboxCheck("ECS service", "failed", `Resolve ECS service placeholders: ${placeholders.join(", ")}.`, "aws ecs create-service --cli-input-json ecs/service.json");
+  if (!service.cluster || !service.taskDefinition) return sandboxCheck("ECS service", "failed", "ECS service needs cluster and taskDefinition references.", "aws ecs create-service --cli-input-json ecs/service.json");
+  if (!Array.isArray(subnets) || subnets.length < 2) return sandboxCheck("ECS service networking", "warning", "Use at least two private subnets for production Fargate services.", "aws ecs create-service --cli-input-json ecs/service.json");
+  if (!Array.isArray(securityGroups) || !securityGroups.length) return sandboxCheck("ECS service", "failed", "ECS service needs a security group.", "aws ecs create-service --cli-input-json ecs/service.json");
+  if (!Array.isArray(loadBalancers) || !loadBalancers.length) return sandboxCheck("ECS service load balancer", "warning", "ECS service has no ALB target group mapping.", "aws ecs create-service --cli-input-json ecs/service.json");
+  if (!hasCircuitBreaker) return sandboxCheck("ECS deployment safety", "warning", "Enable ECS deployment circuit breaker rollback for production.", "aws ecs create-service --cli-input-json ecs/service.json");
+
+  return sandboxCheck("ECS service", "passed", "Fargate service has cluster, networking, security group, load balancer, and rollback controls.", "aws ecs create-service --cli-input-json ecs/service.json");
+}
+
+function parseJsonConfig(content) {
+  try {
+    return { ok: true, value: JSON.parse(content ?? "{}") };
+  } catch {
+    return { ok: false, value: null };
+  }
+}
+
+function findPlaceholders(content) {
+  return unique(String(content ?? "").match(/REPLACE_WITH_[A-Z0-9_]+/g) ?? []);
 }
 
 function validateAzurePipeline(fileMap) {
@@ -1032,6 +1273,24 @@ function generateMultiServiceFiles(stack) {
       purpose: "HTTPS ingress route for frontend and API traffic",
       status: "needs-input",
       content: generateMultiServiceIngress(stack)
+    },
+    {
+      path: "ecs/task-definition.json",
+      purpose: "AWS ECS Fargate task definition for frontend and backend containers",
+      status: "needs-input",
+      content: generateMultiServiceEcsTaskDefinition(stack)
+    },
+    {
+      path: "ecs/service.json",
+      purpose: "AWS ECS Fargate service definition with load balancer placeholders",
+      status: "needs-input",
+      content: generateMultiServiceEcsService(stack)
+    },
+    {
+      path: "ecs/deployment-notes.md",
+      purpose: "AWS ECS Fargate deployment handoff notes",
+      status: "needs-input",
+      content: generateEcsDeploymentNotes(stack)
     }
   ];
 }
@@ -1344,6 +1603,151 @@ function generateMultiServiceIngress(stack) {
       "                port:",
       `                  number: ${frontend.port}`
     ] : [])
+  ].join("\n");
+}
+
+function generateMultiServiceEcsTaskDefinition(stack) {
+  const backend = stack.services.find((service) => service.kind === "backend");
+  const frontend = stack.services.find((service) => service.kind === "frontend");
+  const containers = [];
+
+  if (backend) {
+    containers.push({
+      name: backend.serviceName,
+      image: "REPLACE_WITH_REGISTRY/sovereign-backend:REPLACE_WITH_IMAGE_TAG",
+      essential: true,
+      portMappings: [{ containerPort: Number(backend.port), protocol: "tcp" }],
+      environment: [
+        { name: "PORT", value: String(backend.port) },
+        { name: "APP_ENV", value: "production" },
+        { name: "APP_VERSION", value: "REPLACE_WITH_IMAGE_TAG" },
+        { name: "DB_SSL", value: "true" },
+        { name: "LOG_LEVEL", value: "info" }
+      ],
+      secrets: [
+        { name: "DATABASE_URL", valueFrom: "REPLACE_WITH_DATABASE_URL_SECRET_ARN" },
+        { name: "TOKEN_SECRET", valueFrom: "REPLACE_WITH_TOKEN_SECRET_ARN" },
+        { name: "CORS_ORIGIN", valueFrom: "REPLACE_WITH_CORS_ORIGIN_SECRET_ARN" }
+      ],
+      logConfiguration: {
+        logDriver: "awslogs",
+        options: {
+          "awslogs-group": "/ecs/sovereign-code/backend",
+          "awslogs-region": "REPLACE_WITH_AWS_REGION",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    });
+  }
+
+  if (frontend) {
+    containers.push({
+      name: frontend.serviceName,
+      image: "REPLACE_WITH_REGISTRY/sovereign-frontend:REPLACE_WITH_IMAGE_TAG",
+      essential: true,
+      portMappings: [{ containerPort: Number(frontend.port), protocol: "tcp" }],
+      dependsOn: backend ? [{ containerName: backend.serviceName, condition: "START" }] : [],
+      logConfiguration: {
+        logDriver: "awslogs",
+        options: {
+          "awslogs-group": "/ecs/sovereign-code/frontend",
+          "awslogs-region": "REPLACE_WITH_AWS_REGION",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    });
+  }
+
+  return JSON.stringify(
+    {
+      family: "sovereign-code",
+      networkMode: "awsvpc",
+      requiresCompatibilities: ["FARGATE"],
+      cpu: "512",
+      memory: "1024",
+      executionRoleArn: "REPLACE_WITH_ECS_TASK_EXECUTION_ROLE_ARN",
+      taskRoleArn: "REPLACE_WITH_ECS_TASK_ROLE_ARN",
+      containerDefinitions: containers
+    },
+    null,
+    2
+  );
+}
+
+function generateMultiServiceEcsService(stack) {
+  const frontend = stack.services.find((service) => service.kind === "frontend");
+
+  return JSON.stringify(
+    {
+      serviceName: "sovereign-code",
+      cluster: "REPLACE_WITH_ECS_CLUSTER_ARN",
+      taskDefinition: "REPLACE_WITH_TASK_DEFINITION",
+      desiredCount: 2,
+      launchType: "FARGATE",
+      platformVersion: "LATEST",
+      networkConfiguration: {
+        awsvpcConfiguration: {
+          subnets: ["REPLACE_WITH_PRIVATE_SUBNET_ID_1", "REPLACE_WITH_PRIVATE_SUBNET_ID_2"],
+          securityGroups: ["REPLACE_WITH_ECS_SERVICE_SECURITY_GROUP_ID"],
+          assignPublicIp: "DISABLED"
+        }
+      },
+      loadBalancers: frontend
+        ? [
+            {
+              targetGroupArn: "REPLACE_WITH_FRONTEND_TARGET_GROUP_ARN",
+              containerName: frontend.serviceName,
+              containerPort: Number(frontend.port)
+            }
+          ]
+        : [],
+      deploymentConfiguration: {
+        deploymentCircuitBreaker: {
+          enable: true,
+          rollback: true
+        },
+        maximumPercent: 200,
+        minimumHealthyPercent: 100
+      }
+    },
+    null,
+    2
+  );
+}
+
+function generateEcsDeploymentNotes(stack) {
+  const backend = stack.services.find((service) => service.kind === "backend");
+  const frontend = stack.services.find((service) => service.kind === "frontend");
+
+  return [
+    "# AWS ECS Fargate Deployment Notes",
+    "",
+    "Use these ECS files when Sovereign Code is deployed on ECS Fargate instead of Kubernetes.",
+    "",
+    "## Required AWS Values",
+    "- AWS region",
+    "- ECR backend image URL and immutable tag",
+    "- ECR frontend image URL and immutable tag",
+    "- ECS cluster ARN",
+    "- ECS task execution role ARN",
+    "- ECS task role ARN",
+    "- Private subnet IDs",
+    "- ECS service security group ID",
+    "- ALB target group ARN",
+    "- Secrets Manager ARNs for DATABASE_URL, TOKEN_SECRET, and CORS_ORIGIN",
+    "",
+    "## Service Map",
+    `- Backend: ${backend ? `${backend.serviceName} on ${backend.port}` : "not detected"}`,
+    `- Frontend: ${frontend ? `${frontend.serviceName} on ${frontend.port}` : "not detected"}`,
+    "",
+    "## Apply Order",
+    "1. Push backend and frontend images to ECR.",
+    "2. Replace placeholders in ecs/task-definition.json.",
+    "3. Register the task definition.",
+    "4. Replace placeholders in ecs/service.json.",
+    "5. Create or update the ECS service.",
+    "6. Confirm ALB target health.",
+    "7. Test the public domain and backend health route."
   ].join("\n");
 }
 
@@ -2110,7 +2514,7 @@ function isValidGithubUrl(url) {
   }
 }
 
-const port = Number(process.env.PORT || 8080);
+const port = Number(process.env.PORT || 8095);
 
 app.listen(port, () => {
   console.log(`PipelineForge API listening on ${port}`);

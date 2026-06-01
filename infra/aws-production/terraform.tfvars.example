@@ -1,8 +1,0 @@
-project_name       = "pipelineforge"
-environment        = "production"
-aws_region         = "us-east-1"
-frontend_image_tag = "bootstrap"
-api_image_tag      = "bootstrap"
-desired_count      = 1
-certificate_arn    = ""
-create_database    = false

@@ -1,0 +1,87 @@
+pipeline:
+  name: pipelineforge-production
+  description: Jenkins production pipeline contract for PipelineForge on AWS ECS Fargate.
+  entrypoint: Jenkinsfile.production
+
+requirements:
+  jenkins_plugins:
+    - git
+    - workflow-aggregator
+    - credentials-binding
+    - pipeline-stage-view
+  tools:
+    - nodejs 24.x
+    - npm
+    - docker
+    - aws-cli
+    - terraform >= 1.7.0
+
+credentials:
+  - id: aws-account-id
+    type: secret-text
+    purpose: AWS account ID used to construct ECR registry URLs.
+  - id: aws-jenkins-deploy-user
+    type: aws-credentials-or-agent-role
+    purpose: Allows Jenkins to push ECR images and run Terraform plan/apply.
+
+environment:
+  AWS_REGION: us-east-1
+  TF_WORKING_DIR: infra/aws-production
+  FRONTEND_REPOSITORY: pipelineforge-production-frontend
+  API_REPOSITORY: pipelineforge-production-api
+
+stages:
+  - name: Checkout
+    gates:
+      - scm checkout must succeed
+  - name: Validate Application
+    commands:
+      - npm ci
+      - npm run build
+  - name: Terraform Static Checks
+    commands:
+      - terraform -chdir=infra/aws-production fmt -check
+      - terraform -chdir=infra/aws-production init -backend-config=backend.hcl
+      - terraform -chdir=infra/aws-production validate
+  - name: Build Images
+    outputs:
+      - pipelineforge-production-frontend:${BUILD_NUMBER}
+      - pipelineforge-production-api:${BUILD_NUMBER}
+  - name: Push Images To ECR
+    requires:
+      - ECR repositories created by Terraform bootstrap/apply
+      - Jenkins AWS credentials or IAM instance profile
+  - name: Terraform Plan
+    artifact: infra/aws-production/tfplan
+  - name: Approval Gate
+    type: manual
+  - name: Terraform Apply
+    condition: APPLY_TERRAFORM == true
+
+aws_permissions:
+  ecr:
+    - ecr:GetAuthorizationToken
+    - ecr:BatchCheckLayerAvailability
+    - ecr:InitiateLayerUpload
+    - ecr:UploadLayerPart
+    - ecr:CompleteLayerUpload
+    - ecr:PutImage
+  terraform:
+    - ec2:*
+    - ecs:*
+    - elasticloadbalancing:*
+    - ecr:*
+    - iam:*
+    - logs:*
+    - s3:*
+    - rds:*
+    - dynamodb:*
+
+release_policy:
+  first_deploy_bootstrap:
+    parameter: BOOTSTRAP_ECR
+    purpose: Creates ECR repositories through Terraform before image push on the first deployment.
+  apply_default: false
+  production_apply_requires_manual_approval: true
+  image_tag_source: Jenkins BUILD_NUMBER
+  terraform_plan_is_archived: true

@@ -1,0 +1,571 @@
+PipelineForge Manual AWS Validation Guide for Sovereign_Code.zip
+================================================================
+
+Purpose
+-------
+Use this checklist to validate whether PipelineForge can analyze the Sovereign Code repository, identify the AWS resources needed, collect the required production inputs, generate the correct deployment files, and keep deployment blocked until the required values are provided.
+
+Test repository
+---------------
+Repo archive:
+D:\Sovereign_Code.zip
+
+Current local copy inside PipelineForge workspace:
+D:\PipelineForge_Project\.test-repos\Sovereign_Code.zip
+
+Detected application shape
+--------------------------
+Sovereign Code is a multi-service app.
+
+Service 1:
+Name: ledgerly-backend
+Type: Node.js / Express API
+Path: app/backend
+Dockerfile: app/backend/Dockerfile
+Runtime port: 8080
+Health endpoint: /health
+Readiness endpoint: /ready
+Package manifest: app/backend/package.json
+Start command: npm start
+Build command: not required
+Test command: not present yet
+
+Service 2:
+Name: ledgerly-frontend
+Type: Static frontend served by Nginx
+Path: app/frontend
+Dockerfile: app/frontend/Dockerfile
+Runtime port: 80
+Health endpoint: /health
+Backend route: /api proxies to ledgerly-backend:8080
+Build command: not required
+Test command: not present yet
+
+Backing service:
+PostgreSQL database is required.
+The backend uses the pg package and connects through DATABASE_URL.
+
+Runtime environment required by the app
+---------------------------------------
+PORT
+APP_ENV
+APP_VERSION
+DATABASE_URL
+DB_SSL
+CORS_ORIGIN
+LOG_LEVEL
+TOKEN_SECRET
+
+Important production note:
+TOKEN_SECRET has a local fallback in code, but production must supply a real secret value from a secure source.
+
+
+AWS services needed for Sovereign Code
+======================================
+
+Recommended production path for tomorrow's test
+-----------------------------------------------
+Use EKS for this manual test because PipelineForge currently generates Kubernetes manifests. ECS is a valid future target, but ECS would need task definitions and service definitions, which are not the main generated path right now.
+
+Required AWS services
+---------------------
+1. Amazon ECR
+Create two private container repositories:
+- sovereign-backend
+- sovereign-frontend
+
+These store the backend and frontend Docker images.
+
+2. Amazon EKS
+Create one Kubernetes cluster for running the generated Kubernetes deployment, service, secret, and ingress manifests.
+
+Recommended cluster name:
+pipelineforge-sovereign-dev
+
+Recommended namespace:
+sovereign
+
+3. EKS managed node group or EKS Fargate
+Use one of these so pods can actually run.
+
+For easiest manual testing:
+Use an EKS managed node group.
+
+4. Amazon RDS for PostgreSQL
+Create a managed PostgreSQL database for the backend.
+
+Recommended database name:
+ledgerly
+
+Recommended username:
+ledgerly_admin
+
+PipelineForge needs the final DATABASE_URL value.
+
+Example format:
+postgres://ledgerly_admin:<password>@<rds-endpoint>:5432/ledgerly
+
+Use DB_SSL=true for production-style testing.
+
+5. AWS Secrets Manager or Kubernetes Secret
+For tomorrow's PipelineForge test, PipelineForge can generate a Kubernetes Secret manifest with placeholders replaced by your supplied inputs.
+
+For a stronger production setup later, use AWS Secrets Manager with External Secrets Operator or CSI driver.
+
+Required secret values:
+- DATABASE_URL
+- TOKEN_SECRET
+- CORS_ORIGIN
+
+6. AWS Load Balancer Controller
+Needed if the generated Kubernetes Ingress should create an AWS Application Load Balancer.
+
+This requires IAM permissions for the controller.
+
+7. Application Load Balancer
+The ALB is normally created by the AWS Load Balancer Controller after applying an Ingress manifest.
+
+PipelineForge should produce the ingress host mapping. AWS creates the ALB after the Kubernetes controller sees the ingress.
+
+8. Route 53
+Needed if you want a real domain.
+
+Create or use an existing hosted zone, then point the app domain to the ALB DNS name.
+
+Example app domain:
+sovereign.yourdomain.com
+
+9. AWS Certificate Manager
+Needed for HTTPS.
+
+Create or request a public certificate for the app domain.
+
+Example:
+sovereign.yourdomain.com
+
+10. IAM roles and policies
+You need IAM access for:
+- Azure Pipelines or your local machine to authenticate to AWS.
+- Pushing images to ECR.
+- Updating EKS deployments.
+- EKS nodes to pull images from ECR.
+- AWS Load Balancer Controller to manage ALB resources.
+
+11. CloudWatch Logs
+EKS and container logs should go to CloudWatch for production observability.
+
+12. VPC, subnets, route tables, and security groups
+EKS and RDS need networking.
+
+Recommended layout:
+- Public subnets for ALB.
+- Private subnets for EKS nodes.
+- Private subnets for RDS.
+- Security group allowing EKS workloads to connect to RDS on port 5432.
+- Security group allowing ALB to receive 80/443.
+
+13. S3 and DynamoDB for Terraform state, later stage
+This is not required for tomorrow's manual PipelineForge app test, but it will be needed when we start production Terraform.
+
+Terraform state bucket:
+pipelineforge-tfstate-<account-or-env>
+
+DynamoDB lock table:
+pipelineforge-terraform-locks
+
+
+Do we need Jenkins EC2?
+======================
+
+Yes, if Jenkins is the selected CI/CD provider and you are not using an existing Jenkins controller.
+
+For the preferred Jenkins flow:
+- CI/CD provider: Jenkins
+- Cloud provider: AWS
+- Jenkins controller or agent with Docker, AWS CLI, kubectl, and Terraform is required
+
+Create or prepare:
+- 1 EC2 instance for Jenkins controller
+- IAM role or AWS credentials for ECR/EKS access
+- Docker installed on Jenkins
+- kubectl installed on Jenkins
+- aws CLI installed on Jenkins
+
+
+What PipelineForge should ask you for
+=====================================
+
+Cloud and registry inputs
+-------------------------
+AWS account ID
+AWS region
+ECR backend repository URL
+ECR frontend repository URL
+Image tag
+EKS cluster name
+Kubernetes namespace
+
+Application runtime inputs
+--------------------------
+Backend port: 8080
+Frontend port: 80
+Public domain
+CORS_ORIGIN
+TOKEN_SECRET
+DATABASE_URL
+DB_SSL
+APP_ENV
+APP_VERSION
+LOG_LEVEL
+
+CI/CD inputs
+------------
+CI/CD provider: Jenkins
+Jenkins AWS credential or instance profile
+ECR login step
+EKS deployment permission
+Manual approval environment name
+
+Database inputs
+---------------
+RDS endpoint
+Database name
+Database username
+Database password
+Database port: 5432
+SSL enabled: true
+
+Networking inputs
+-----------------
+Domain name
+ACM certificate ARN
+Route 53 hosted zone
+ALB DNS name after ingress is created
+
+
+Manual PipelineForge validation steps
+=====================================
+
+Phase 0: Start PipelineForge locally
+------------------------------------
+1. Open a terminal in:
+   D:\PipelineForge_Project
+
+2. Start the PipelineForge API.
+   Expected API URL:
+   http://localhost:8095
+
+3. Start the PipelineForge frontend.
+   Expected frontend URL:
+   http://127.0.0.1:5179
+
+4. Open PipelineForge in the browser.
+
+Expected result:
+PipelineForge loads without blank screen or console crash.
+
+
+Phase 1: Upload Sovereign Code
+------------------------------
+1. Go to the Source step.
+
+2. Choose manual ZIP upload.
+
+3. Upload:
+   D:\Sovereign_Code.zip
+
+Expected result:
+Upload completes and the workflow moves forward.
+
+Expected repo name:
+Sovereign_Code
+
+Failure condition:
+If the screen freezes, upload handling is still broken and must be fixed before continuing.
+
+
+Phase 2: Check Analyze results
+------------------------------
+In the Analyze step, confirm these items:
+
+1. Stack detection:
+   Node.js / JavaScript should be detected.
+
+2. Framework:
+   Express should be detected for backend.
+
+3. Services:
+   PipelineForge should show two deployable services:
+   - ledgerly-backend
+   - ledgerly-frontend
+
+4. Ports:
+   ledgerly-backend should show 8080.
+   ledgerly-frontend should show 80.
+
+5. Database:
+   PostgreSQL should be shown as required.
+
+6. Dockerfiles:
+   Backend Dockerfile should be detected.
+   Frontend Dockerfile should be detected.
+
+7. Package manifest:
+   app/backend/package.json should be detected.
+
+8. Build command:
+   No build script should not become a blocking failure for this repo because the backend has no build step and the frontend is static Nginx.
+
+9. Test command:
+   Missing test script can be a warning, not a deployment blocker.
+
+Expected result:
+The app should not treat Sovereign Code as one generic Node app. It must treat it as frontend + backend + PostgreSQL.
+
+
+Phase 3: Check Validate inputs
+------------------------------
+Go to the Validate step.
+
+Confirm PipelineForge asks for or clearly requires these values:
+
+1. App port:
+   8080
+
+2. Image registry:
+   Use the ECR registry or full image prefix.
+
+Example:
+123456789012.dkr.ecr.ap-south-1.amazonaws.com/sovereign
+
+3. Public domain:
+   Example:
+sovereign.yourdomain.com
+
+4. Database URL:
+   Example:
+postgres://ledgerly_admin:<password>@<rds-endpoint>:5432/ledgerly
+
+5. Token secret:
+   Use a long random secret. Do not use the local fallback.
+
+6. CORS origin:
+   Example:
+https://sovereign.yourdomain.com
+
+Expected result before inputs:
+PipelineForge should keep sandbox/cloud/deployment blocked.
+
+Expected result after inputs:
+Generated files should stop showing unresolved placeholders for registry, domain, DATABASE_URL, TOKEN_SECRET, and CORS_ORIGIN.
+
+
+Phase 4: Run sandbox checks
+---------------------------
+1. Fill the required deployment inputs.
+
+2. Click Run sandbox checks.
+
+Expected result:
+Static sandbox checks should run.
+
+Expected good result:
+- Dockerfile syntax passes.
+- Compose smoke test passes or is ready.
+- Kubernetes deployment passes placeholder and port checks.
+- Kubernetes service passes selector and targetPort checks.
+- Ingress route passes host and service mapping checks.
+- Azure Pipelines YAML passes stage checks.
+- Jenkinsfile passes stage checks if generated.
+- Secret exposure check passes.
+
+Failure condition:
+If sandbox checks still say registry, domain, DATABASE_URL, TOKEN_SECRET, or CORS_ORIGIN are unresolved after entering those inputs, placeholder resolution is broken.
+
+
+Phase 5: Check generated files
+------------------------------
+Go to Generate.
+
+Expected files for Sovereign Code:
+
+Container files:
+- backend/Dockerfile or app/backend/Dockerfile equivalent
+- frontend/Dockerfile or app/frontend/Dockerfile equivalent
+- .dockerignore
+
+Local sandbox:
+- docker-compose.yml
+
+Kubernetes:
+- k8s/secret.yaml
+- k8s/deployment.yaml
+- k8s/service.yaml
+- k8s/ingress.yaml
+
+CI/CD:
+- azure-pipelines.yml
+- Jenkinsfile, optional if Jenkins is selected
+
+Infrastructure:
+- AWS Terraform preview or starter files
+- Registry, runtime, database, secrets, and observability should be represented in the plan
+
+Expected result:
+Files must be service-aware. They should not generate one generic Dockerfile for the whole repository.
+
+
+Phase 6: Check pipeline stage
+-----------------------------
+Go to Pipeline.
+
+Preferred CI/CD provider:
+Jenkins
+
+Expected pipeline behavior:
+1. Checkout source.
+2. Detect stack.
+3. Install backend dependencies.
+4. Build backend image.
+5. Build frontend image.
+6. Push backend image to ECR.
+7. Push frontend image to ECR.
+8. Run security scan.
+9. Keep deploy stage gated until cloud credentials and approval are configured.
+
+Expected result:
+The pipeline must build and push both images separately.
+
+Failure condition:
+If the pipeline only builds one generic image, multi-service CI/CD generation is incomplete.
+
+
+Phase 7: Check infra stage
+--------------------------
+Go to Infra.
+
+Choose:
+AWS
+
+Expected AWS plan:
+- ECR for backend and frontend images
+- EKS or Kubernetes runtime target
+- RDS PostgreSQL
+- Secrets for DATABASE_URL, TOKEN_SECRET, CORS_ORIGIN
+- Load balancer / ingress path
+- Route 53 / domain mapping
+- ACM / HTTPS certificate
+- CloudWatch logs
+- IAM roles for CI/CD and cluster access
+
+Expected result:
+PipelineForge should tell you what AWS values are still missing before deployment.
+
+
+Phase 8: Optional real AWS deployment test
+------------------------------------------
+Only run this after you are confident generated files are correct.
+
+1. Authenticate to AWS.
+
+2. Authenticate Docker to ECR.
+
+3. Build backend image from app/backend.
+
+4. Build frontend image from app/frontend.
+
+5. Push both images to ECR.
+
+6. Update generated Kubernetes manifests with the pushed image URLs and immutable tags.
+
+7. Create namespace:
+   sovereign
+
+8. Apply generated secret:
+   k8s/secret.yaml
+
+9. Apply generated deployment:
+   k8s/deployment.yaml
+
+10. Apply generated service:
+    k8s/service.yaml
+
+11. Apply generated ingress:
+    k8s/ingress.yaml
+
+12. Wait for pods to become ready.
+
+13. Confirm frontend loads through ALB or domain.
+
+14. Confirm API health:
+    https://sovereign.yourdomain.com/api/health
+
+15. Create a test user.
+
+16. Add a test transaction.
+
+17. Refresh dashboard and confirm data persists in PostgreSQL.
+
+
+Pass criteria
+=============
+
+PipelineForge passes tomorrow's manual test if:
+
+1. ZIP upload does not freeze.
+2. Sovereign Code is detected as multi-service.
+3. Backend and frontend services are shown separately.
+4. Backend port 8080 is detected.
+5. Frontend port 80 is detected.
+6. PostgreSQL is detected as required.
+7. PipelineForge asks for registry, domain, DATABASE_URL, TOKEN_SECRET, and CORS_ORIGIN.
+8. Deployment stays blocked before required inputs are supplied.
+9. Sandbox checks pass after required inputs are supplied.
+10. Generated files are service-aware.
+11. Jenkins builds and pushes both images separately.
+12. AWS infra plan includes ECR, EKS, RDS PostgreSQL, secrets, ingress, HTTPS, IAM, and observability.
+13. Readiness report clearly explains what is missing and how to fix it.
+
+
+Known gaps to watch during tomorrow's test
+==========================================
+
+1. Terraform is still starter-level.
+PipelineForge may show the right AWS resources but may not yet generate complete production Terraform modules for all of them.
+
+2. ECS is not the primary generated target yet.
+If you choose ECS, PipelineForge will need ECS task definition, service, target group, listener, and IAM task role generation in a future stage.
+
+3. Secrets should move beyond plain Kubernetes Secret later.
+For production, use AWS Secrets Manager with External Secrets Operator or CSI driver.
+
+4. Runtime dry-runs depend on local tools.
+Docker, kubectl, AWS CLI, and cluster credentials must exist locally if you want real executable validation.
+
+5. Full HTTPS requires AWS Load Balancer Controller plus ACM certificate and domain setup.
+
+
+Recommended AWS choice for tomorrow
+===================================
+
+Use this path:
+
+Cloud provider:
+AWS
+
+Runtime:
+EKS
+
+Registry:
+ECR
+
+Database:
+RDS PostgreSQL
+
+Secrets:
+Kubernetes Secret for first manual test, then AWS Secrets Manager in the next production stage
+
+CI/CD:
+Jenkins
+
+Create Jenkins EC2 only if you do not already have a Jenkins controller/agent available.
