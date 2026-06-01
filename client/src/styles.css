@@ -799,14 +799,15 @@ code {
 
 .validation-command-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
-  gap: 16px;
+  grid-template-columns: minmax(420px, 0.95fr) minmax(440px, 1.05fr);
+  gap: 18px;
   align-items: start;
 }
 
 .validation-stack {
   display: grid;
-  gap: 14px;
+  gap: 12px;
+  align-content: start;
 }
 
 .evidence-bundle {
@@ -1128,6 +1129,35 @@ code {
   color: #7fb2ff;
 }
 
+.target-selector {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.target-selector button {
+  display: grid;
+  gap: 4px;
+  padding: 11px 12px;
+  border: 1px solid rgba(126, 176, 255, 0.16);
+  border-radius: 8px;
+  background: rgba(4, 9, 19, 0.56);
+  color: #d8e7fb;
+  text-align: left;
+}
+
+.target-selector button.active {
+  border-color: rgba(73, 144, 255, 0.66);
+  background: rgba(35, 109, 255, 0.22);
+  box-shadow: inset 0 0 0 1px rgba(126, 176, 255, 0.16);
+}
+
+.target-selector span {
+  color: #9fb3cd;
+  font-size: 0.82rem;
+}
+
 .deployment-inputs {
   display: grid;
   gap: 18px;
@@ -1206,22 +1236,23 @@ code {
   grid-template-columns: minmax(0, 1fr) max-content;
   gap: 16px;
   align-items: center;
-  margin-bottom: 18px;
+  margin: 0;
+}
+
+.validation-input-card,
+.toolchain-panel,
+.validation-action-card {
+  display: grid;
+  gap: 16px;
   padding: 14px;
   border: 1px solid rgba(126, 176, 255, 0.14);
   border-radius: 8px;
   background: rgba(4, 9, 19, 0.48);
 }
 
-.validation-input-card,
-.toolchain-panel {
-  display: grid;
-  gap: 16px;
-  margin-bottom: 18px;
-  padding: 14px;
-  border: 1px solid rgba(126, 176, 255, 0.14);
-  border-radius: 8px;
-  background: rgba(4, 9, 19, 0.48);
+.primary-action-card {
+  border-color: rgba(93, 181, 255, 0.22);
+  background: rgba(5, 13, 29, 0.72);
 }
 
 .toolchain-list {
@@ -1283,7 +1314,7 @@ code {
 }
 
 .sandbox-actions.compact {
-  margin: 14px 0 0;
+  margin: 0;
 }
 
 .sandbox-actions.compact strong,
@@ -1295,19 +1326,37 @@ code {
   margin-bottom: 5px;
 }
 
-.runtime-dryrun {
+.action-requirements {
   display: grid;
-  gap: 14px;
-}
-
-.gate-note {
-  margin: -4px 0 0;
-  padding: 10px 12px;
+  gap: 8px;
+  margin: 0;
+  padding: 11px 12px;
   border: 1px solid rgba(126, 176, 255, 0.14);
   border-radius: 8px;
-  background: rgba(35, 109, 255, 0.1);
-  color: #b9d0ef;
-  font-size: 0.94rem;
+  background: rgba(4, 9, 19, 0.42);
+}
+
+.action-requirements > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.action-requirements span {
+  color: #9fb3cd;
+}
+
+.action-requirements > div span {
+  padding: 6px 9px;
+  border: 1px solid rgba(126, 176, 255, 0.18);
+  border-radius: 999px;
+  background: rgba(35, 109, 255, 0.12);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.action-requirements.ready {
+  border-color: rgba(91, 230, 184, 0.18);
 }
 
 .autofix-panel,

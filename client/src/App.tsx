@@ -25,7 +25,8 @@ import type { Analysis, AutoFixResult, RuleStatus, RuntimeToolchain, SandboxResu
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 type WorkflowStep = "source" | "analyze" | "validate" | "generate" | "pipeline";
-type GeneratedFileFilter = "all" | "docker" | "jenkins" | "azure" | "kubernetes" | "ecs";
+type DeploymentTarget = "aks" | "eks" | "ecs";
+type GeneratedFileFilter = "all" | "docker" | "jenkins" | "azure" | "kubernetes" | "aks" | "eks" | "ecs";
 type GeneratedFile = Analysis["generatedFiles"][number];
 type DeploymentInputs = {
   port: string;
@@ -39,6 +40,13 @@ type DeploymentInputs = {
   corsOrigin: string;
   awsRegion: string;
   imageTag: string;
+  aksClusterName: string;
+  aksNamespace: string;
+  azureResourceGroup: string;
+  aksIngressClass: string;
+  eksClusterName: string;
+  eksNamespace: string;
+  eksIngressClass: string;
   ecsClusterArn: string;
   ecsTaskExecutionRoleArn: string;
   ecsTaskRoleArn: string;
@@ -60,6 +68,13 @@ const emptyDeploymentInputs: DeploymentInputs = {
   corsOrigin: "",
   awsRegion: "",
   imageTag: "",
+  aksClusterName: "",
+  aksNamespace: "default",
+  azureResourceGroup: "",
+  aksIngressClass: "nginx",
+  eksClusterName: "",
+  eksNamespace: "default",
+  eksIngressClass: "alb",
   ecsClusterArn: "",
   ecsTaskExecutionRoleArn: "",
   ecsTaskRoleArn: "",
@@ -75,6 +90,7 @@ function App() {
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [ciProvider, setCiProvider] = useState<"azure-pipelines" | "jenkins">("azure-pipelines");
+  const [deploymentTarget, setDeploymentTarget] = useState<DeploymentTarget>("eks");
   const [generatedFileFilter, setGeneratedFileFilter] = useState<GeneratedFileFilter>("all");
   const [githubUrl, setGithubUrl] = useState("");
   const [zipFile, setZipFile] = useState<File | null>(null);
@@ -96,6 +112,7 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const currentGeneratedFiles = analysis ? applyGeneratedOverrides(resolveGeneratedFiles(analysis, deploymentInputs), generatedFileOverrides) : [];
+  const currentTargetGeneratedFiles = filterFilesForDeploymentTarget(currentGeneratedFiles, deploymentTarget);
 
   useEffect(() => {
     let cancelled = false;
@@ -196,7 +213,7 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           repoName: analysis.repoName,
-          files: currentGeneratedFiles,
+          files: currentTargetGeneratedFiles,
           deploymentInputs
         })
       });
@@ -234,7 +251,7 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           repoName: analysis.repoName,
-          files: currentGeneratedFiles
+          files: currentTargetGeneratedFiles
         })
       });
       setRuntimeResult(await parseResponse(response));
@@ -257,7 +274,7 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           repoName: analysis.repoName,
-          files: currentGeneratedFiles
+          files: currentTargetGeneratedFiles
         })
       });
       setSecurityResult(await parseResponse(response));
@@ -296,6 +313,16 @@ function App() {
     setSandboxResult(null);
     setRuntimeResult(null);
     setSecurityResult(null);
+  }
+
+  function changeDeploymentTarget(target: DeploymentTarget) {
+    setDeploymentTarget(target);
+    setSandboxResult(null);
+    setRuntimeResult(null);
+    setSecurityResult(null);
+    if (target === "aks") setGeneratedFileFilter("aks");
+    if (target === "eks") setGeneratedFileFilter("eks");
+    if (target === "ecs") setGeneratedFileFilter("ecs");
   }
 
   async function downloadReleaseBundle() {
@@ -467,6 +494,7 @@ function App() {
             analysis={analysis}
             autoFixResult={autoFixResult}
             deploymentInputs={deploymentInputs}
+            deploymentTarget={deploymentTarget}
             generatedFiles={currentGeneratedFiles}
             isAutoFixLoading={isAutoFixLoading}
             isSandboxLoading={isSandboxLoading}
@@ -475,6 +503,7 @@ function App() {
             isToolchainLoading={isToolchainLoading}
             onApplyAutoFixes={applyAutoFixes}
             onDeploymentInputsChange={setDeploymentInputs}
+            onDeploymentTargetChange={changeDeploymentTarget}
             onInspectToolchain={inspectRuntimeToolchain}
             onPreviewAutoFixes={previewAutoFixes}
             onRunRuntime={runRuntimeDryRun}
@@ -489,10 +518,12 @@ function App() {
         {activeStep === "generate" ? (
           <GenerationView
             analysis={analysis}
+            deploymentTarget={deploymentTarget}
             filter={generatedFileFilter}
             generatedFiles={currentGeneratedFiles}
             isBundleLoading={isBundleLoading}
             onDownloadBundle={downloadReleaseBundle}
+            onDeploymentTargetChange={changeDeploymentTarget}
             onFilterChange={setGeneratedFileFilter}
           />
         ) : null}
@@ -1070,32 +1101,38 @@ function recommendationStep(item: string): WorkflowStep {
 
 function GenerationView({
   analysis,
+  deploymentTarget,
   filter,
   generatedFiles,
   isBundleLoading,
   onDownloadBundle,
+  onDeploymentTargetChange,
   onFilterChange
 }: {
   analysis: Analysis | null;
+  deploymentTarget: DeploymentTarget;
   filter: GeneratedFileFilter;
   generatedFiles: GeneratedFile[];
   isBundleLoading: boolean;
   onDownloadBundle: () => void;
+  onDeploymentTargetChange: (target: DeploymentTarget) => void;
   onFilterChange: (filter: GeneratedFileFilter) => void;
 }) {
-  const readyCount = generatedFiles.filter((file) => file.status === "ready").length;
-  const needsInputCount = generatedFiles.filter((file) => file.status === "needs-input").length;
+  const targetFiles = filterFilesForDeploymentTarget(generatedFiles, deploymentTarget);
+  const readyCount = targetFiles.filter((file) => file.status === "ready").length;
+  const needsInputCount = targetFiles.filter((file) => file.status === "needs-input").length;
   const filteredFiles = filterGeneratedFiles(generatedFiles, filter);
 
   return (
     <div className="results-grid paired-grid">
       <FocusedPanel kicker="Generated configs" title="Preview and export">
         <div className="resolution-summary">
-          <Metric icon={<CheckCircle2 size={20} />} label="Ready files" value={`${readyCount}/${generatedFiles.length}`} />
+          <Metric icon={<CheckCircle2 size={20} />} label="Ready files" value={`${readyCount}/${targetFiles.length}`} />
           <Metric icon={<Settings2 size={20} />} label="Needs input" value={needsInputCount.toString()} />
         </div>
+        <DeploymentTargetSelector value={deploymentTarget} onChange={onDeploymentTargetChange} />
         <GeneratedFileFilters active={filter} files={generatedFiles} onChange={onFilterChange} />
-        <p className="panel-note">Resolve production inputs in Validate, then return here to preview and export deployable files.</p>
+        <p className="panel-note">Choose AKS, EKS, or ECS, resolve only that target's inputs in Validate, then export deployable files.</p>
         <div className="release-bundle-card">
           <div>
             <strong>Release bundle</strong>
@@ -1129,6 +1166,8 @@ function GeneratedFileFilters({
     { id: "jenkins", label: "Jenkins" },
     { id: "azure", label: "Azure" },
     { id: "kubernetes", label: "Kubernetes" },
+    { id: "aks", label: "AKS" },
+    { id: "eks", label: "EKS" },
     { id: "ecs", label: "ECS" }
   ];
 
@@ -1150,17 +1189,58 @@ function filterGeneratedFiles(files: GeneratedFile[], filter: GeneratedFileFilte
   if (filter === "jenkins") return files.filter((file) => file.path === "Jenkinsfile");
   if (filter === "azure") return files.filter((file) => file.path === "azure-pipelines.yml");
   if (filter === "kubernetes") return files.filter((file) => file.path.startsWith("k8s/"));
+  if (filter === "aks") return filterFilesForDeploymentTarget(files, "aks");
+  if (filter === "eks") return filterFilesForDeploymentTarget(files, "eks");
   if (filter === "ecs") return files.filter((file) => file.path.startsWith("ecs/"));
   return files;
+}
+
+function DeploymentTargetSelector({
+  value,
+  onChange
+}: {
+  value: DeploymentTarget;
+  onChange: (target: DeploymentTarget) => void;
+}) {
+  const targets: Array<{ id: DeploymentTarget; label: string; detail: string }> = [
+    { id: "aks", label: "AKS", detail: "Azure Kubernetes Service" },
+    { id: "eks", label: "EKS", detail: "AWS Kubernetes Service" },
+    { id: "ecs", label: "ECS", detail: "AWS Fargate services" }
+  ];
+
+  return (
+    <div className="target-selector" aria-label="Deployment target">
+      {targets.map((target) => (
+        <button className={value === target.id ? "active" : ""} key={target.id} type="button" onClick={() => onChange(target.id)}>
+          <strong>{target.label}</strong>
+          <span>{target.detail}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function filterFilesForDeploymentTarget(files: GeneratedFile[], target: DeploymentTarget) {
+  const base = files.filter((file) => isBaseGeneratedFile(file.path));
+  if (target === "ecs") return [...base, ...files.filter((file) => file.path.startsWith("ecs/"))];
+  if (target === "eks") return [...base, ...files.filter((file) => file.path.startsWith("k8s/") || file.path.startsWith("eks/"))];
+  return [...base, ...files.filter((file) => file.path.startsWith("k8s/") || file.path.startsWith("aks/"))];
+}
+
+function isBaseGeneratedFile(path: string) {
+  const lowerPath = path.toLowerCase();
+  return lowerPath.endsWith("dockerfile") || lowerPath.endsWith(".dockerignore") || path === "docker-compose.yml" || path === "Jenkinsfile" || path === "azure-pipelines.yml";
 }
 
 function DeploymentInputsPanel({
   analysis,
   inputs,
+  target,
   onChange
 }: {
   analysis: Analysis | null;
   inputs: DeploymentInputs;
+  target: DeploymentTarget;
   onChange: (inputs: DeploymentInputs) => void;
 }) {
   const updateInput = (key: keyof DeploymentInputs, value: string) => onChange({ ...inputs, [key]: value });
@@ -1219,49 +1299,96 @@ function DeploymentInputsPanel({
         </label>
         <label>
           <span>AWS region</span>
-          <em>Required for ECS CloudWatch logs.</em>
+          <em>Required for EKS/ECS AWS commands and logs.</em>
           <input value={inputs.awsRegion} placeholder="ap-south-1" onChange={(event) => updateInput("awsRegion", event.target.value)} />
         </label>
         <label>
           <span>Image tag</span>
-          <em>Required for immutable ECS deploys.</em>
+          <em>Required for immutable AKS/EKS/ECS deploys.</em>
           <input value={inputs.imageTag} placeholder="build-42 or git-sha" onChange={(event) => updateInput("imageTag", event.target.value)} />
         </label>
-        <label>
-          <span>ECS cluster ARN</span>
-          <em>Required for ecs/service.json.</em>
-          <input value={inputs.ecsClusterArn} placeholder="arn:aws:ecs:..." onChange={(event) => updateInput("ecsClusterArn", event.target.value)} />
-        </label>
-        <label>
-          <span>Task execution role ARN</span>
-          <em>Required for ECR pull and logs.</em>
-          <input value={inputs.ecsTaskExecutionRoleArn} placeholder="arn:aws:iam::...:role/..." onChange={(event) => updateInput("ecsTaskExecutionRoleArn", event.target.value)} />
-        </label>
-        <label>
-          <span>Task role ARN</span>
-          <em>Required for app AWS permissions.</em>
-          <input value={inputs.ecsTaskRoleArn} placeholder="arn:aws:iam::...:role/..." onChange={(event) => updateInput("ecsTaskRoleArn", event.target.value)} />
-        </label>
-        <label>
-          <span>Task definition</span>
-          <em>Required after registering ECS task definition.</em>
-          <input value={inputs.ecsTaskDefinition} placeholder="sovereign-code:12 or task definition ARN" onChange={(event) => updateInput("ecsTaskDefinition", event.target.value)} />
-        </label>
-        <label>
-          <span>Private subnet IDs</span>
-          <em>Required for Fargate networking.</em>
-          <input value={inputs.ecsSubnetIds} placeholder="subnet-aaa, subnet-bbb" onChange={(event) => updateInput("ecsSubnetIds", event.target.value)} />
-        </label>
-        <label>
-          <span>ECS security group ID</span>
-          <em>Required for Fargate service traffic.</em>
-          <input value={inputs.ecsSecurityGroupId} placeholder="sg-0123456789" onChange={(event) => updateInput("ecsSecurityGroupId", event.target.value)} />
-        </label>
-        <label>
-          <span>ALB target group ARN</span>
-          <em>Required for ECS frontend service.</em>
-          <input value={inputs.ecsTargetGroupArn} placeholder="arn:aws:elasticloadbalancing:..." onChange={(event) => updateInput("ecsTargetGroupArn", event.target.value)} />
-        </label>
+        {target === "aks" ? (
+          <>
+            <label>
+              <span>AKS cluster name</span>
+              <em>Required for AKS kubectl context handoff.</em>
+              <input value={inputs.aksClusterName} placeholder="prod-aks" onChange={(event) => updateInput("aksClusterName", event.target.value)} />
+            </label>
+            <label>
+              <span>Azure resource group</span>
+              <em>Required for AKS cluster lookup.</em>
+              <input value={inputs.azureResourceGroup} placeholder="rg-production" onChange={(event) => updateInput("azureResourceGroup", event.target.value)} />
+            </label>
+            <label>
+              <span>AKS namespace</span>
+              <em>Required for namespaced Kubernetes apply.</em>
+              <input value={inputs.aksNamespace} placeholder="default" onChange={(event) => updateInput("aksNamespace", event.target.value)} />
+            </label>
+            <label>
+              <span>AKS ingress class</span>
+              <em>Required if ingress controller is not default.</em>
+              <input value={inputs.aksIngressClass} placeholder="nginx" onChange={(event) => updateInput("aksIngressClass", event.target.value)} />
+            </label>
+          </>
+        ) : null}
+        {target === "eks" ? (
+          <>
+            <label>
+              <span>EKS cluster name</span>
+              <em>Required for aws eks update-kubeconfig.</em>
+              <input value={inputs.eksClusterName} placeholder="prod-eks" onChange={(event) => updateInput("eksClusterName", event.target.value)} />
+            </label>
+            <label>
+              <span>EKS namespace</span>
+              <em>Required for namespaced Kubernetes apply.</em>
+              <input value={inputs.eksNamespace} placeholder="default" onChange={(event) => updateInput("eksNamespace", event.target.value)} />
+            </label>
+            <label>
+              <span>EKS ingress class</span>
+              <em>Required for AWS Load Balancer Controller ingress.</em>
+              <input value={inputs.eksIngressClass} placeholder="alb" onChange={(event) => updateInput("eksIngressClass", event.target.value)} />
+            </label>
+          </>
+        ) : null}
+        {target === "ecs" ? (
+          <>
+            <label>
+              <span>ECS cluster ARN</span>
+              <em>Required for ecs/service.json.</em>
+              <input value={inputs.ecsClusterArn} placeholder="arn:aws:ecs:..." onChange={(event) => updateInput("ecsClusterArn", event.target.value)} />
+            </label>
+            <label>
+              <span>Task execution role ARN</span>
+              <em>Required for ECR pull and logs.</em>
+              <input value={inputs.ecsTaskExecutionRoleArn} placeholder="arn:aws:iam::...:role/..." onChange={(event) => updateInput("ecsTaskExecutionRoleArn", event.target.value)} />
+            </label>
+            <label>
+              <span>Task role ARN</span>
+              <em>Required for app AWS permissions.</em>
+              <input value={inputs.ecsTaskRoleArn} placeholder="arn:aws:iam::...:role/..." onChange={(event) => updateInput("ecsTaskRoleArn", event.target.value)} />
+            </label>
+            <label>
+              <span>Task definition</span>
+              <em>Required after registering ECS task definition.</em>
+              <input value={inputs.ecsTaskDefinition} placeholder="sovereign-code:12 or task definition ARN" onChange={(event) => updateInput("ecsTaskDefinition", event.target.value)} />
+            </label>
+            <label>
+              <span>Private subnet IDs</span>
+              <em>Required for Fargate networking.</em>
+              <input value={inputs.ecsSubnetIds} placeholder="subnet-aaa, subnet-bbb" onChange={(event) => updateInput("ecsSubnetIds", event.target.value)} />
+            </label>
+            <label>
+              <span>ECS security group ID</span>
+              <em>Required for Fargate service traffic.</em>
+              <input value={inputs.ecsSecurityGroupId} placeholder="sg-0123456789" onChange={(event) => updateInput("ecsSecurityGroupId", event.target.value)} />
+            </label>
+            <label>
+              <span>ALB target group ARN</span>
+              <em>Required for ECS frontend service.</em>
+              <input value={inputs.ecsTargetGroupArn} placeholder="arn:aws:elasticloadbalancing:..." onChange={(event) => updateInput("ecsTargetGroupArn", event.target.value)} />
+            </label>
+          </>
+        ) : null}
       </div>
       <div className="resolution-list">
         <span className={inputs.port ? "resolved" : ""}>Port mapping</span>
@@ -1270,12 +1397,16 @@ function DeploymentInputsPanel({
         <span className={inputs.databaseUrl ? "resolved" : ""}>Database secret</span>
         <span className={inputs.tokenSecret ? "resolved" : ""}>Token secret</span>
         <span className={inputs.corsOrigin ? "resolved" : ""}>CORS origin</span>
-        <span className={inputs.ecsClusterArn ? "resolved" : ""}>ECS cluster</span>
-        <span className={inputs.ecsTaskExecutionRoleArn ? "resolved" : ""}>Execution role</span>
-        <span className={inputs.ecsTaskDefinition ? "resolved" : ""}>Task definition</span>
-        <span className={inputs.ecsSubnetIds ? "resolved" : ""}>Private subnets</span>
-        <span className={inputs.ecsSecurityGroupId ? "resolved" : ""}>ECS security group</span>
-        <span className={inputs.ecsTargetGroupArn ? "resolved" : ""}>Target group</span>
+        {target === "aks" ? <span className={inputs.aksClusterName ? "resolved" : ""}>AKS cluster</span> : null}
+        {target === "aks" ? <span className={inputs.azureResourceGroup ? "resolved" : ""}>Resource group</span> : null}
+        {target === "eks" ? <span className={inputs.eksClusterName ? "resolved" : ""}>EKS cluster</span> : null}
+        {target === "eks" || target === "ecs" ? <span className={inputs.awsRegion ? "resolved" : ""}>AWS region</span> : null}
+        {target === "ecs" ? <span className={inputs.ecsClusterArn ? "resolved" : ""}>ECS cluster</span> : null}
+        {target === "ecs" ? <span className={inputs.ecsTaskExecutionRoleArn ? "resolved" : ""}>Execution role</span> : null}
+        {target === "ecs" ? <span className={inputs.ecsTaskDefinition ? "resolved" : ""}>Task definition</span> : null}
+        {target === "ecs" ? <span className={inputs.ecsSubnetIds ? "resolved" : ""}>Private subnets</span> : null}
+        {target === "ecs" ? <span className={inputs.ecsSecurityGroupId ? "resolved" : ""}>ECS security group</span> : null}
+        {target === "ecs" ? <span className={inputs.ecsTargetGroupArn ? "resolved" : ""}>Target group</span> : null}
         <span className={analysis?.stack.startCommand || inputs.startCommand ? "resolved" : ""}>Runtime start command</span>
       </div>
     </div>
@@ -1286,6 +1417,7 @@ function ValidationView({
   analysis,
   autoFixResult,
   deploymentInputs,
+  deploymentTarget,
   generatedFiles,
   isAutoFixLoading,
   isRuntimeLoading,
@@ -1294,6 +1426,7 @@ function ValidationView({
   isToolchainLoading,
   onApplyAutoFixes,
   onDeploymentInputsChange,
+  onDeploymentTargetChange,
   onInspectToolchain,
   onPreviewAutoFixes,
   onRunRuntime,
@@ -1307,6 +1440,7 @@ function ValidationView({
   analysis: Analysis | null;
   autoFixResult: AutoFixResult | null;
   deploymentInputs: DeploymentInputs;
+  deploymentTarget: DeploymentTarget;
   generatedFiles: GeneratedFile[];
   isAutoFixLoading: boolean;
   isRuntimeLoading: boolean;
@@ -1315,6 +1449,7 @@ function ValidationView({
   isToolchainLoading: boolean;
   onApplyAutoFixes: () => void;
   onDeploymentInputsChange: (inputs: DeploymentInputs) => void;
+  onDeploymentTargetChange: (target: DeploymentTarget) => void;
   onInspectToolchain: () => void;
   onPreviewAutoFixes: () => void;
   onRunRuntime: () => void;
@@ -1327,9 +1462,13 @@ function ValidationView({
 }) {
   if (!analysis) return <EmptyState />;
 
-  const unresolvedFiles = generatedFiles.filter((file) => file.status !== "ready");
+  const targetFiles = filterFilesForDeploymentTarget(generatedFiles, deploymentTarget);
+  const unresolvedFiles = targetFiles.filter((file) => file.status !== "ready");
   const unresolvedCount = unresolvedFiles.length;
-  const readyCount = generatedFiles.length - unresolvedCount;
+  const readyCount = targetFiles.length - unresolvedCount;
+  const sandboxMissing = getMissingDeploymentInputs(analysis, deploymentInputs, deploymentTarget, "sandbox");
+  const runtimeMissing = getMissingDeploymentInputs(analysis, deploymentInputs, deploymentTarget, "runtime", sandboxResult);
+  const securityMissing = getMissingDeploymentInputs(analysis, deploymentInputs, deploymentTarget, "security");
 
   return (
     <div className="results-grid paired-grid">
@@ -1357,54 +1496,54 @@ function ValidationView({
               <div className="validation-input-heading">
                 <div>
                   <strong>Required deployment inputs</strong>
-                  <span>Complete these values here, then run sandbox checks without leaving Validate.</span>
+                  <span>Complete only the values needed for the selected deployment target.</span>
                 </div>
                 <em className={`review-badge ${unresolvedCount ? "needs-input" : "ready"}`}>
-                  {readyCount}/{generatedFiles.length} ready
+                  {readyCount}/{targetFiles.length} ready
                 </em>
               </div>
-              <DeploymentInputsPanel analysis={analysis} inputs={deploymentInputs} onChange={onDeploymentInputsChange} />
+              <DeploymentTargetSelector value={deploymentTarget} onChange={onDeploymentTargetChange} />
+              <DeploymentInputsPanel analysis={analysis} inputs={deploymentInputs} target={deploymentTarget} onChange={onDeploymentInputsChange} />
             </div>
             {unresolvedCount ? <MissingGeneratedInputs files={unresolvedFiles} /> : null}
           </div>
           <div className="validation-stack">
-            <div className="sandbox-actions">
-              <div>
-                <p>
-                  Run deterministic checks against the resolved generated files before Docker or cloud execution is allowed.
-                </p>
-                <span>{unresolvedCount ? `${unresolvedCount} generated files still need input.` : "All generated files are ready for sandbox checks."}</span>
+            <div className="validation-action-card primary-action-card">
+              <div className="sandbox-actions">
+                <div>
+                  <p>
+                    Run deterministic checks against the resolved generated files before Docker or cloud execution is allowed.
+                  </p>
+                  <span>{unresolvedCount ? `${unresolvedCount} ${deploymentTarget.toUpperCase()} files still need input.` : `${deploymentTarget.toUpperCase()} files are ready for sandbox checks.`}</span>
+                </div>
+                <button className="primary-button" type="button" disabled={isSandboxLoading || sandboxMissing.length > 0 || unresolvedCount > 0} onClick={onRunSandbox}>
+                  <Play size={17} />
+                  {isSandboxLoading ? "Running..." : "Run sandbox checks"}
+                </button>
               </div>
-              <button className="primary-button" type="button" disabled={isSandboxLoading || unresolvedCount > 0} onClick={onRunSandbox}>
-                <Play size={17} />
-                {isSandboxLoading ? "Running..." : "Run sandbox checks"}
-              </button>
+              <ActionRequirements title="Needed for sandbox checks" missing={sandboxMissing} readyText={`${deploymentTarget.toUpperCase()} placeholders are resolved.`} />
+              <SandboxResultView result={sandboxResult} />
             </div>
-            <SandboxResultView result={sandboxResult} />
             <RuntimeDryRunPanel
-              disabled={isRuntimeLoading || unresolvedCount > 0 || !sandboxResult || sandboxResult.status === "blocked"}
-              disabledReason={validationGateReason(unresolvedCount, sandboxResult)}
+              disabled={isRuntimeLoading || runtimeMissing.length > 0}
               isLoading={isRuntimeLoading}
+              missing={runtimeMissing}
               onRun={onRunRuntime}
               result={runtimeResult}
+              target={deploymentTarget}
             />
             <SecurityGatePanel
               autoFixResult={autoFixResult}
-              disabled={isSecurityLoading || unresolvedCount > 0 || !sandboxResult || sandboxResult.status === "blocked"}
-              disabledReason={validationGateReason(unresolvedCount, sandboxResult)}
+              disabled={isSecurityLoading || securityMissing.length > 0}
               isAutoFixLoading={isAutoFixLoading}
               isLoading={isSecurityLoading}
+              missing={securityMissing}
               onApplyAutoFixes={onApplyAutoFixes}
               onPreviewAutoFixes={onPreviewAutoFixes}
               onRun={onRunSecurity}
               result={securityResult}
             />
-            <ValidationEvidenceBundle
-              generatedFiles={generatedFiles}
-              runtimeResult={runtimeResult}
-              sandboxResult={sandboxResult}
-              securityResult={securityResult}
-            />
+            <ValidationEvidenceBundle generatedFiles={targetFiles} runtimeResult={runtimeResult} sandboxResult={sandboxResult} securityResult={securityResult} />
           </div>
         </div>
       </FocusedPanel>
@@ -1412,11 +1551,108 @@ function ValidationView({
   );
 }
 
-function validationGateReason(unresolvedCount: number, sandboxResult: SandboxResult | null) {
-  if (unresolvedCount > 0) return `${unresolvedCount} generated file${unresolvedCount === 1 ? "" : "s"} still need input.`;
-  if (!sandboxResult) return "Run sandbox checks first.";
-  if (sandboxResult.status === "blocked") return "Fix blocked sandbox checks first.";
-  return null;
+function getMissingDeploymentInputs(
+  analysis: Analysis,
+  inputs: DeploymentInputs,
+  target: DeploymentTarget,
+  action: "sandbox" | "runtime" | "security",
+  sandboxResult?: SandboxResult | null
+) {
+  if (action === "security") return [];
+
+  const missing = requiredInputKeysForTarget(analysis, target)
+    .filter((item) => !hasDeploymentInput(inputs, item.key))
+    .map((item) => item.label);
+
+  if (action === "runtime") {
+    if (!sandboxResult) missing.unshift("Sandbox checks passed");
+    if (sandboxResult?.status === "blocked") missing.unshift("Blocked sandbox checks fixed");
+  }
+
+  return [...new Set(missing)];
+}
+
+function requiredInputKeysForTarget(analysis: Analysis, target: DeploymentTarget): Array<{ key: keyof DeploymentInputs; label: string }> {
+  const hasKubernetesFiles = analysis.generatedFiles.some((file) => file.path.startsWith("k8s/"));
+  const hasEcsFiles = analysis.generatedFiles.some((file) => file.path.startsWith("ecs/"));
+  const needsDatabase = analysis.stack.databases?.length || analysis.stack.requiredEnv?.some((key) => key.includes("DATABASE"));
+  const needsToken = analysis.stack.requiredEnv?.some((key) => key.includes("TOKEN") || key.includes("SECRET"));
+  const needsCors = analysis.stack.requiredEnv?.some((key) => key.includes("CORS"));
+  const common: Array<{ key: keyof DeploymentInputs; label: string }> = [
+    { key: "imageRegistry", label: "Image registry" },
+    { key: "imageTag", label: "Image tag" }
+  ];
+
+  if (needsDatabase) common.push({ key: "databaseUrl", label: "Database URL or secret reference" });
+  if (needsToken) common.push({ key: "tokenSecret", label: "Token secret" });
+  if (needsCors) common.push({ key: "corsOrigin", label: "CORS origin" });
+
+  if (target === "ecs" && hasEcsFiles) {
+    return [
+      ...common,
+      { key: "awsRegion", label: "AWS region" },
+      { key: "ecsClusterArn", label: "ECS cluster ARN" },
+      { key: "ecsTaskExecutionRoleArn", label: "Task execution role ARN" },
+      { key: "ecsTaskRoleArn", label: "Task role ARN" },
+      { key: "ecsTaskDefinition", label: "Task definition" },
+      { key: "ecsSubnetIds", label: "Private subnet IDs" },
+      { key: "ecsSecurityGroupId", label: "ECS security group ID" },
+      { key: "ecsTargetGroupArn", label: "ALB target group ARN" }
+    ];
+  }
+
+  if (target === "eks" && hasKubernetesFiles) {
+    return [
+      ...common,
+      { key: "domain", label: "Public domain" },
+      { key: "awsRegion", label: "AWS region" },
+      { key: "eksClusterName", label: "EKS cluster name" },
+      { key: "eksNamespace", label: "EKS namespace" },
+      { key: "eksIngressClass", label: "EKS ingress class" }
+    ];
+  }
+
+  if (target === "aks" && hasKubernetesFiles) {
+    return [
+      ...common,
+      { key: "domain", label: "Public domain" },
+      { key: "aksClusterName", label: "AKS cluster name" },
+      { key: "azureResourceGroup", label: "Azure resource group" },
+      { key: "aksNamespace", label: "AKS namespace" },
+      { key: "aksIngressClass", label: "AKS ingress class" }
+    ];
+  }
+
+  return common;
+}
+
+function hasDeploymentInput(inputs: DeploymentInputs, key: keyof DeploymentInputs) {
+  return Boolean(String(inputs[key] ?? "").trim());
+}
+
+function ActionRequirements({
+  title,
+  missing,
+  readyText
+}: {
+  title: string;
+  missing: string[];
+  readyText: string;
+}) {
+  return (
+    <div className={`action-requirements ${missing.length ? "needs-input" : "ready"}`}>
+      <strong>{title}</strong>
+      {missing.length ? (
+        <div>
+          {missing.map((item) => (
+            <span key={item}>{item}</span>
+          ))}
+        </div>
+      ) : (
+        <span>{readyText}</span>
+      )}
+    </div>
+  );
 }
 
 function ValidationEvidenceBundle({
@@ -1466,9 +1702,9 @@ function evidenceItem(name: string, status: RuleStatus, detail: string) {
 function SecurityGatePanel({
   autoFixResult,
   disabled,
-  disabledReason,
   isAutoFixLoading,
   isLoading,
+  missing,
   onApplyAutoFixes,
   onPreviewAutoFixes,
   onRun,
@@ -1476,9 +1712,9 @@ function SecurityGatePanel({
 }: {
   autoFixResult: AutoFixResult | null;
   disabled: boolean;
-  disabledReason: string | null;
   isAutoFixLoading: boolean;
   isLoading: boolean;
+  missing: string[];
   onApplyAutoFixes: () => void;
   onPreviewAutoFixes: () => void;
   onRun: () => void;
@@ -1487,7 +1723,7 @@ function SecurityGatePanel({
   const canAutoFix = Boolean(result?.checks.some((check) => check.status === "warning" || check.status === "failed"));
 
   return (
-    <div className="runtime-dryrun">
+    <div className="validation-action-card">
       <div className="sandbox-actions compact">
         <div>
           <strong>Security gates</strong>
@@ -1498,7 +1734,7 @@ function SecurityGatePanel({
           {isLoading ? "Scanning..." : "Run security gates"}
         </button>
       </div>
-      {disabledReason ? <p className="gate-note">{disabledReason}</p> : null}
+      <ActionRequirements title="Needed for security gates" missing={missing} readyText="No deployment values required. Generated target files can be scanned now." />
       {result ? <SandboxResultView result={result} /> : null}
       <div className="autofix-panel">
         <div>
@@ -1538,19 +1774,21 @@ function SecurityGatePanel({
 
 function RuntimeDryRunPanel({
   disabled,
-  disabledReason,
   isLoading,
+  missing,
   onRun,
-  result
+  result,
+  target
 }: {
   disabled: boolean;
-  disabledReason: string | null;
   isLoading: boolean;
+  missing: string[];
   onRun: () => void;
   result: SandboxResult | null;
+  target: DeploymentTarget;
 }) {
   return (
-    <div className="runtime-dryrun">
+    <div className="validation-action-card">
       <div className="sandbox-actions compact">
         <div>
           <strong>Runtime dry-runs</strong>
@@ -1561,7 +1799,7 @@ function RuntimeDryRunPanel({
           {isLoading ? "Running..." : "Run runtime dry-runs"}
         </button>
       </div>
-      {disabledReason ? <p className="gate-note">{disabledReason}</p> : null}
+      <ActionRequirements title="Needed for runtime dry-runs" missing={missing} readyText={`Sandbox passed. ${target.toUpperCase()} client dry-runs can start.`} />
       {result ? <SandboxResultView result={result} /> : null}
     </div>
   );
@@ -1972,6 +2210,13 @@ function defaultDeploymentInputs(analysis: Analysis): DeploymentInputs {
     corsOrigin: "",
     awsRegion: "",
     imageTag: "",
+    aksClusterName: "",
+    aksNamespace: "default",
+    azureResourceGroup: "",
+    aksIngressClass: "nginx",
+    eksClusterName: "",
+    eksNamespace: "default",
+    eksIngressClass: "alb",
     ecsClusterArn: "",
     ecsTaskExecutionRoleArn: "",
     ecsTaskRoleArn: "",
@@ -2027,6 +2272,7 @@ function applyDeploymentInputs(file: GeneratedFile, inputs: DeploymentInputs) {
   }
 
   content = applyEcsDeploymentInputs(content, inputs);
+  content = applyKubernetesTargetInputs(content, inputs);
 
   if (inputs.buildCommand.trim()) {
     content = content.replaceAll("echo Build command pending", inputs.buildCommand.trim());
@@ -2055,6 +2301,18 @@ function applyDeploymentInputs(file: GeneratedFile, inputs: DeploymentInputs) {
   }
 
   return content;
+}
+
+function applyKubernetesTargetInputs(content: string, inputs: DeploymentInputs) {
+  return content
+    .replaceAll("REPLACE_WITH_AWS_REGION", inputs.awsRegion.trim() || "REPLACE_WITH_AWS_REGION")
+    .replaceAll("REPLACE_WITH_AKS_CLUSTER_NAME", inputs.aksClusterName.trim() || "REPLACE_WITH_AKS_CLUSTER_NAME")
+    .replaceAll("REPLACE_WITH_AKS_NAMESPACE", inputs.aksNamespace.trim() || "REPLACE_WITH_AKS_NAMESPACE")
+    .replaceAll("REPLACE_WITH_AZURE_RESOURCE_GROUP", inputs.azureResourceGroup.trim() || "REPLACE_WITH_AZURE_RESOURCE_GROUP")
+    .replaceAll("REPLACE_WITH_AKS_INGRESS_CLASS", inputs.aksIngressClass.trim() || "REPLACE_WITH_AKS_INGRESS_CLASS")
+    .replaceAll("REPLACE_WITH_EKS_CLUSTER_NAME", inputs.eksClusterName.trim() || "REPLACE_WITH_EKS_CLUSTER_NAME")
+    .replaceAll("REPLACE_WITH_EKS_NAMESPACE", inputs.eksNamespace.trim() || "REPLACE_WITH_EKS_NAMESPACE")
+    .replaceAll("REPLACE_WITH_EKS_INGRESS_CLASS", inputs.eksIngressClass.trim() || "REPLACE_WITH_EKS_INGRESS_CLASS");
 }
 
 function applyEcsDeploymentInputs(content: string, inputs: DeploymentInputs) {
@@ -2090,6 +2348,9 @@ function resolveFileStatus(file: GeneratedFile, inputs: DeploymentInputs, analys
   const hasDatabaseUrl = Boolean(inputs.databaseUrl?.trim());
   const hasTokenSecret = Boolean(inputs.tokenSecret?.trim());
   const hasCorsOrigin = Boolean(inputs.corsOrigin?.trim());
+  const hasImageTag = Boolean(inputs.imageTag.trim());
+  const hasAksCore = Boolean(inputs.aksClusterName.trim() && inputs.azureResourceGroup.trim() && inputs.aksNamespace.trim() && inputs.aksIngressClass.trim());
+  const hasEksCore = Boolean(inputs.awsRegion.trim() && inputs.eksClusterName.trim() && inputs.eksNamespace.trim() && inputs.eksIngressClass.trim());
   const hasEcsCore = Boolean(
     inputs.awsRegion.trim() &&
       inputs.imageTag.trim() &&
@@ -2113,6 +2374,8 @@ function resolveFileStatus(file: GeneratedFile, inputs: DeploymentInputs, analys
   if (file.path === "ecs/task-definition.json") return hasRegistry && hasDatabaseUrl && hasTokenSecret && hasCorsOrigin && hasEcsCore ? "ready" : file.status;
   if (file.path === "ecs/service.json") return hasRegistry && hasEcsCore ? "ready" : file.status;
   if (file.path === "ecs/deployment-notes.md") return hasRegistry && hasEcsCore ? "ready" : file.status;
+  if (file.path.startsWith("eks/")) return hasRegistry && hasImageTag && hasDomain && hasEksCore ? "ready" : file.status;
+  if (file.path.startsWith("aks/")) return hasRegistry && hasImageTag && hasDomain && hasAksCore ? "ready" : file.status;
 
   return file.status;
 }

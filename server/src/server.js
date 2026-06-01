@@ -890,8 +890,21 @@ function materializeDeploymentInputs(files, deploymentInputs = {}) {
       if (value) content = content.replaceAll(`REPLACE_WITH_${key}`, value);
     }
     content = materializeEcsInputs(content, deploymentInputs);
+    content = materializeKubernetesTargetInputs(content, deploymentInputs);
     return { ...file, content };
   });
+}
+
+function materializeKubernetesTargetInputs(content, deploymentInputs = {}) {
+  return content
+    .replaceAll("REPLACE_WITH_AWS_REGION", String(deploymentInputs.awsRegion ?? "").trim() || "REPLACE_WITH_AWS_REGION")
+    .replaceAll("REPLACE_WITH_AKS_CLUSTER_NAME", String(deploymentInputs.aksClusterName ?? "").trim() || "REPLACE_WITH_AKS_CLUSTER_NAME")
+    .replaceAll("REPLACE_WITH_AKS_NAMESPACE", String(deploymentInputs.aksNamespace ?? "").trim() || "REPLACE_WITH_AKS_NAMESPACE")
+    .replaceAll("REPLACE_WITH_AZURE_RESOURCE_GROUP", String(deploymentInputs.azureResourceGroup ?? "").trim() || "REPLACE_WITH_AZURE_RESOURCE_GROUP")
+    .replaceAll("REPLACE_WITH_AKS_INGRESS_CLASS", String(deploymentInputs.aksIngressClass ?? "").trim() || "REPLACE_WITH_AKS_INGRESS_CLASS")
+    .replaceAll("REPLACE_WITH_EKS_CLUSTER_NAME", String(deploymentInputs.eksClusterName ?? "").trim() || "REPLACE_WITH_EKS_CLUSTER_NAME")
+    .replaceAll("REPLACE_WITH_EKS_NAMESPACE", String(deploymentInputs.eksNamespace ?? "").trim() || "REPLACE_WITH_EKS_NAMESPACE")
+    .replaceAll("REPLACE_WITH_EKS_INGRESS_CLASS", String(deploymentInputs.eksIngressClass ?? "").trim() || "REPLACE_WITH_EKS_INGRESS_CLASS");
 }
 
 function materializeEcsInputs(content, deploymentInputs = {}) {
@@ -1168,6 +1181,24 @@ function generateFiles(stack) {
       purpose: "HTTPS ingress route placeholder",
       status: "needs-input",
       content: generateKubernetesIngress()
+    },
+    {
+      path: "aks/deployment-notes.md",
+      purpose: "Azure AKS deployment handoff notes",
+      status: "needs-input",
+      content: generateAksDeploymentNotes(stack)
+    },
+    {
+      path: "eks/ingress-patch.yaml",
+      purpose: "AWS EKS ALB ingress annotations",
+      status: "needs-input",
+      content: generateEksIngressPatch(stack)
+    },
+    {
+      path: "eks/deployment-notes.md",
+      purpose: "AWS EKS deployment handoff notes",
+      status: "needs-input",
+      content: generateEksDeploymentNotes(stack)
     }
   ];
 }
@@ -1273,6 +1304,24 @@ function generateMultiServiceFiles(stack) {
       purpose: "HTTPS ingress route for frontend and API traffic",
       status: "needs-input",
       content: generateMultiServiceIngress(stack)
+    },
+    {
+      path: "aks/deployment-notes.md",
+      purpose: "Azure AKS deployment handoff notes",
+      status: "needs-input",
+      content: generateAksDeploymentNotes(stack)
+    },
+    {
+      path: "eks/ingress-patch.yaml",
+      purpose: "AWS EKS ALB ingress annotations",
+      status: "needs-input",
+      content: generateEksIngressPatch(stack)
+    },
+    {
+      path: "eks/deployment-notes.md",
+      purpose: "AWS EKS deployment handoff notes",
+      status: "needs-input",
+      content: generateEksDeploymentNotes(stack)
     },
     {
       path: "ecs/task-definition.json",
@@ -1603,6 +1652,99 @@ function generateMultiServiceIngress(stack) {
       "                port:",
       `                  number: ${frontend.port}`
     ] : [])
+  ].join("\n");
+}
+
+function generateEksIngressPatch(stack) {
+  return [
+    "apiVersion: networking.k8s.io/v1",
+    "kind: Ingress",
+    "metadata:",
+    "  name: sovereign-web",
+    "  annotations:",
+    "    kubernetes.io/ingress.class: REPLACE_WITH_EKS_INGRESS_CLASS",
+    "    alb.ingress.kubernetes.io/scheme: internet-facing",
+    "    alb.ingress.kubernetes.io/target-type: ip",
+    "    alb.ingress.kubernetes.io/healthcheck-path: /",
+    "    alb.ingress.kubernetes.io/listen-ports: '[{\"HTTPS\":443},{\"HTTP\":80}]'",
+    "    alb.ingress.kubernetes.io/ssl-redirect: '443'",
+    "spec:",
+    "  ingressClassName: REPLACE_WITH_EKS_INGRESS_CLASS",
+    "  rules:",
+    "    - host: REPLACE_WITH_DOMAIN",
+    "      http:",
+    "        paths:",
+    "          - path: /",
+    "            pathType: Prefix",
+    "            backend:",
+    "              service:",
+    `                name: ${stack.services?.find((service) => service.kind === "frontend")?.serviceName ?? "pipelineforge-app"}`,
+    "                port:",
+    `                  number: ${stack.services?.find((service) => service.kind === "frontend")?.port ?? (stack.port === "auto-detect" ? "80" : stack.port)}`
+  ].join("\n");
+}
+
+function generateEksDeploymentNotes(stack) {
+  const services = stack.services?.length
+    ? stack.services.map((service) => `- ${service.name}: ${service.serviceName} on port ${service.port}`)
+    : [`- App: pipelineforge-app on port ${stack.port === "auto-detect" ? "3000" : stack.port}`];
+
+  return [
+    "# AWS EKS Deployment Notes",
+    "",
+    "Use these files when the app is deployed on Amazon EKS with ECR images and the AWS Load Balancer Controller.",
+    "",
+    "## Required AWS Values",
+    "- AWS region: REPLACE_WITH_AWS_REGION",
+    "- EKS cluster name: REPLACE_WITH_EKS_CLUSTER_NAME",
+    "- Kubernetes namespace: REPLACE_WITH_EKS_NAMESPACE",
+    "- Ingress class: REPLACE_WITH_EKS_INGRESS_CLASS",
+    "- ECR registry and immutable image tag",
+    "- Public domain: REPLACE_WITH_DOMAIN",
+    "- Secrets for DATABASE_URL, TOKEN_SECRET, and CORS_ORIGIN when required by the app",
+    "",
+    "## Service Map",
+    ...services,
+    "",
+    "## Apply Order",
+    "1. Push images to ECR.",
+    "2. Confirm aws eks update-kubeconfig works for the cluster.",
+    "3. Apply k8s/secret.yaml after replacing secret placeholders.",
+    "4. Apply k8s/deployment.yaml and k8s/service.yaml.",
+    "5. Apply eks/ingress-patch.yaml or merge its annotations into k8s/ingress.yaml.",
+    "6. Confirm ALB target health and public HTTPS routing."
+  ].join("\n");
+}
+
+function generateAksDeploymentNotes(stack) {
+  const services = stack.services?.length
+    ? stack.services.map((service) => `- ${service.name}: ${service.serviceName} on port ${service.port}`)
+    : [`- App: pipelineforge-app on port ${stack.port === "auto-detect" ? "3000" : stack.port}`];
+
+  return [
+    "# Azure AKS Deployment Notes",
+    "",
+    "Use these files when the app is deployed on AKS with ACR images and a Kubernetes ingress controller.",
+    "",
+    "## Required Azure Values",
+    "- Azure resource group: REPLACE_WITH_AZURE_RESOURCE_GROUP",
+    "- AKS cluster name: REPLACE_WITH_AKS_CLUSTER_NAME",
+    "- Kubernetes namespace: REPLACE_WITH_AKS_NAMESPACE",
+    "- Ingress class: REPLACE_WITH_AKS_INGRESS_CLASS",
+    "- ACR login server and immutable image tag",
+    "- Public domain: REPLACE_WITH_DOMAIN",
+    "- Secrets for DATABASE_URL, TOKEN_SECRET, and CORS_ORIGIN when required by the app",
+    "",
+    "## Service Map",
+    ...services,
+    "",
+    "## Apply Order",
+    "1. Push images to ACR.",
+    "2. Confirm az aks get-credentials works for the cluster.",
+    "3. Apply k8s/secret.yaml after replacing secret placeholders.",
+    "4. Apply k8s/deployment.yaml and k8s/service.yaml.",
+    "5. Apply k8s/ingress.yaml with the selected ingress class.",
+    "6. Confirm public HTTPS routing."
   ].join("\n");
 }
 
