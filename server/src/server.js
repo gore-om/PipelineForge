@@ -96,14 +96,14 @@ app.post("/api/sandbox/validate", (req, res) => {
 });
 
 app.post("/api/sandbox/runtime", async (req, res) => {
-  const { files = [], repoName = "repository" } = req.body;
+  const { files = [], deploymentInputs = {}, repoName = "repository" } = req.body;
 
   if (!Array.isArray(files) || files.length === 0) {
     return res.status(400).json({ error: "Provide generated files for runtime dry-run validation." });
   }
 
   try {
-    res.json(await runRuntimeDryRun({ files, repoName }));
+    res.json(await runRuntimeDryRun({ files, deploymentInputs, repoName }));
   } catch (error) {
     res.status(500).json({ error: "Runtime dry-run failed.", detail: error.message });
   }
@@ -399,22 +399,29 @@ function checkRuntimeTool(name, command, args, commandText, required) {
   });
 }
 
-async function runRuntimeDryRun({ files, repoName }) {
+async function runRuntimeDryRun({ files, deploymentInputs = {}, repoName }) {
   const workspace = await mkdtemp(path.join(os.tmpdir(), "pipelineforge-runtime-"));
 
   try {
-    await materializeGeneratedFiles(workspace, files);
+    const resolvedFiles = materializeDeploymentInputs(files, deploymentInputs);
+    await materializeGeneratedFiles(workspace, resolvedFiles);
+    const fileMap = new Map(resolvedFiles.map((file) => [file.path, file]));
     const kubeconfigPath = path.join(workspace, "kubeconfig");
     await writeFile(kubeconfigPath, generateEmptyKubeconfig(), "utf8");
 
     const checks = [
+      validateRuntimeFileSet(fileMap),
+      validateRuntimePlaceholderResolution(fileMap),
+      validateRuntimeEcsFiles(fileMap),
       await runOptionalCommand({
         name: "Docker Compose config",
         command: "docker",
         args: ["compose", "config"],
         commandText: "docker compose config",
         cwd: workspace,
-        missingMessage: "Docker Compose is not available for runtime validation."
+        missingMessage: "Docker Compose is not available for runtime validation.",
+        skipIfMissing: !fileMap.has("docker-compose.yml"),
+        skippedMessage: "docker-compose.yml is not part of the selected generated files."
       }),
       await runOptionalCommand({
         name: "Kubernetes deployment dry-run",
@@ -422,7 +429,9 @@ async function runRuntimeDryRun({ files, repoName }) {
         args: ["apply", "--dry-run=client", "--validate=false", "--kubeconfig", kubeconfigPath, "-f", path.join("k8s", "deployment.yaml")],
         commandText: "kubectl apply --dry-run=client --validate=false -f k8s/deployment.yaml",
         cwd: workspace,
-        missingMessage: "kubectl is not available for deployment dry-run."
+        missingMessage: "kubectl is not available for deployment dry-run.",
+        skipIfMissing: !fileMap.has("k8s/deployment.yaml"),
+        skippedMessage: "k8s/deployment.yaml is not part of the selected generated files."
       }),
       await runOptionalCommand({
         name: "Kubernetes service dry-run",
@@ -430,7 +439,9 @@ async function runRuntimeDryRun({ files, repoName }) {
         args: ["apply", "--dry-run=client", "--validate=false", "--kubeconfig", kubeconfigPath, "-f", path.join("k8s", "service.yaml")],
         commandText: "kubectl apply --dry-run=client --validate=false -f k8s/service.yaml",
         cwd: workspace,
-        missingMessage: "kubectl is not available for service dry-run."
+        missingMessage: "kubectl is not available for service dry-run.",
+        skipIfMissing: !fileMap.has("k8s/service.yaml"),
+        skippedMessage: "k8s/service.yaml is not part of the selected generated files."
       }),
       await runOptionalCommand({
         name: "Kubernetes ingress dry-run",
@@ -438,7 +449,9 @@ async function runRuntimeDryRun({ files, repoName }) {
         args: ["apply", "--dry-run=client", "--validate=false", "--kubeconfig", kubeconfigPath, "-f", path.join("k8s", "ingress.yaml")],
         commandText: "kubectl apply --dry-run=client --validate=false -f k8s/ingress.yaml",
         cwd: workspace,
-        missingMessage: "kubectl is not available for ingress dry-run."
+        missingMessage: "kubectl is not available for ingress dry-run.",
+        skipIfMissing: !fileMap.has("k8s/ingress.yaml"),
+        skippedMessage: "k8s/ingress.yaml is not part of the selected generated files."
       })
     ];
     const summary = summarizeChecks(checks);
@@ -454,6 +467,41 @@ async function runRuntimeDryRun({ files, repoName }) {
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
+}
+
+function validateRuntimeFileSet(fileMap) {
+  const hasContainer = [...fileMap.keys()].some((filePath) => filePath.toLowerCase().endsWith("dockerfile"));
+  const hasDeployTarget = [...fileMap.keys()].some((filePath) => filePath.startsWith("k8s/") || filePath.startsWith("ecs/") || filePath.startsWith("eks/") || filePath.startsWith("aks/"));
+
+  if (!hasContainer) return sandboxCheck("Runtime file set", "failed", "No Dockerfile was selected for runtime validation.", "runtime file set");
+  if (!hasDeployTarget) return sandboxCheck("Runtime file set", "warning", "No cloud deployment target files were selected.", "runtime file set");
+  return sandboxCheck("Runtime file set", "passed", "Container and deployment target files are present for runtime validation.", "runtime file set");
+}
+
+function validateRuntimePlaceholderResolution(fileMap) {
+  const unresolved = [...fileMap.values()].flatMap((file) => {
+    const matches = String(file.content ?? "").match(/REPLACE_WITH_[A-Z0-9_]+/g) ?? [];
+    return matches.map((placeholder) => `${file.path}:${placeholder}`);
+  });
+
+  if (unresolved.length) return sandboxCheck("Runtime placeholders", "failed", `${unresolved.length} unresolved deployment placeholder${unresolved.length === 1 ? "" : "s"} remain.`, "placeholder resolution");
+  return sandboxCheck("Runtime placeholders", "passed", "No unresolved REPLACE_WITH placeholders remain in selected files.", "placeholder resolution");
+}
+
+function validateRuntimeEcsFiles(fileMap) {
+  const task = fileMap.get("ecs/task-definition.json");
+  const service = fileMap.get("ecs/service.json");
+
+  if (!task && !service) return sandboxCheck("ECS runtime structure", "skipped", "ECS files are not part of the selected target.", "ecs runtime structure");
+  if (!task || !service) return sandboxCheck("ECS runtime structure", "failed", "ECS target needs both task-definition.json and service.json.", "ecs runtime structure");
+
+  const taskJson = parseJsonConfig(task.content);
+  const serviceJson = parseJsonConfig(service.content);
+  if (!taskJson.ok) return sandboxCheck("ECS runtime structure", "failed", `Task definition JSON is invalid: ${taskJson.error}`, "aws ecs register-task-definition");
+  if (!serviceJson.ok) return sandboxCheck("ECS runtime structure", "failed", `ECS service JSON is invalid: ${serviceJson.error}`, "aws ecs create-service");
+  if (!Array.isArray(taskJson.value.containerDefinitions) || !taskJson.value.containerDefinitions.length) return sandboxCheck("ECS runtime structure", "failed", "Task definition needs at least one container definition.", "aws ecs register-task-definition");
+  if (!serviceJson.value.networkConfiguration?.awsvpcConfiguration) return sandboxCheck("ECS runtime structure", "failed", "ECS service needs awsvpc network configuration.", "aws ecs create-service");
+  return sandboxCheck("ECS runtime structure", "passed", "ECS task and service JSON are structurally ready for AWS CLI handoff.", "ecs runtime structure");
 }
 
 function generateEmptyKubeconfig() {
@@ -483,8 +531,13 @@ function normalizeGeneratedPath(filePath) {
   return normalized.startsWith("/") ? normalized.slice(1) : normalized;
 }
 
-function runOptionalCommand({ name, command, args, commandText, cwd, missingMessage }) {
+function runOptionalCommand({ name, command, args, commandText, cwd, missingMessage, skipIfMissing = false, skippedMessage }) {
   return new Promise((resolve) => {
+    if (skipIfMissing) {
+      resolve(sandboxCheck(name, "skipped", skippedMessage ?? "Generated file is not part of the selected target.", commandText));
+      return;
+    }
+
     execFile(command, args, { cwd, timeout: 12000, windowsHide: true }, (error, stdout, stderr) => {
       const output = `${stdout || ""}${stderr || ""}`.trim();
 
@@ -589,19 +642,22 @@ function validateNoHardcodedSecrets(content) {
 }
 
 function validateDockerRunsAsNonRoot(fileMap) {
-  const dockerfile = fileMap.get("Dockerfile")?.content ?? "";
+  const dockerfiles = [...fileMap.values()].filter((file) => file.path?.toLowerCase().endsWith("dockerfile"));
 
-  if (!dockerfile) return sandboxCheck("Container user", "skipped", "Dockerfile is missing.", "Dockerfile USER check");
-  if (/^USER\s+\S+/m.test(dockerfile)) return sandboxCheck("Container user", "passed", "Dockerfile sets an explicit runtime user.", "Dockerfile USER check");
-  return sandboxCheck("Container user", "warning", "Dockerfile does not set a non-root runtime user yet.", "Dockerfile USER check");
+  if (!dockerfiles.length) return sandboxCheck("Container user", "skipped", "Dockerfile is missing.", "Dockerfile USER check");
+  const missingUser = dockerfiles.filter((file) => !/^USER\s+\S+/m.test(file.content ?? "") && !/nginx:/i.test(file.content ?? ""));
+  if (!missingUser.length) return sandboxCheck("Container user", "passed", `${dockerfiles.length} Dockerfile${dockerfiles.length === 1 ? "" : "s"} set a non-root runtime user or use hardened nginx runtime.`, "Dockerfile USER check");
+  return sandboxCheck("Container user", "warning", `${missingUser.length} Dockerfile${missingUser.length === 1 ? "" : "s"} do not set a non-root runtime user yet.`, "Dockerfile USER check");
 }
 
 function validatePinnedContainerImage(fileMap) {
   const deployment = fileMap.get("k8s/deployment.yaml")?.content ?? "";
+  const ecsTask = fileMap.get("ecs/task-definition.json")?.content ?? "";
+  const content = [deployment, ecsTask].filter(Boolean).join("\n");
 
-  if (!deployment) return sandboxCheck("Image tag policy", "skipped", "Kubernetes deployment manifest is missing.", "image tag policy");
-  if (/image:\s+\S+:latest\b/m.test(deployment)) return sandboxCheck("Image tag policy", "warning", "Deployment uses the latest tag; production should use immutable build tags.", "image tag policy");
-  if (/image:\s+\S+:\S+/m.test(deployment)) return sandboxCheck("Image tag policy", "passed", "Deployment uses an explicit image tag.", "image tag policy");
+  if (!content) return sandboxCheck("Image tag policy", "skipped", "No Kubernetes deployment or ECS task definition was selected.", "image tag policy");
+  if (/image:\s+\S+:latest\b/m.test(content) || /"image":\s*"[^"]+:latest"/m.test(content)) return sandboxCheck("Image tag policy", "warning", "Deployment uses the latest tag; production should use immutable build tags.", "image tag policy");
+  if (/image:\s+\S+:\S+/m.test(content) || /"image":\s*"[^"]+:[^"]+"/m.test(content)) return sandboxCheck("Image tag policy", "passed", "Deployment uses explicit image tags.", "image tag policy");
   return sandboxCheck("Image tag policy", "failed", "Deployment image tag is missing.", "image tag policy");
 }
 
@@ -625,11 +681,12 @@ function validatePipelineDeployLock(fileMap) {
 }
 
 function validateDockerIgnoreSecrets(fileMap) {
-  const dockerignore = fileMap.get(".dockerignore")?.content ?? "";
+  const ignores = [...fileMap.values()].filter((file) => file.path?.toLowerCase().endsWith(".dockerignore"));
 
-  if (!dockerignore) return sandboxCheck("Secret build context", "failed", ".dockerignore is missing.", ".dockerignore secret policy");
-  if (dockerignore.includes(".env")) return sandboxCheck("Secret build context", "passed", ".dockerignore excludes .env files from image build context.", ".dockerignore secret policy");
-  return sandboxCheck("Secret build context", "failed", ".dockerignore must exclude .env files.", ".dockerignore secret policy");
+  if (!ignores.length) return sandboxCheck("Secret build context", "failed", ".dockerignore is missing.", ".dockerignore secret policy");
+  const unsafe = ignores.filter((file) => !String(file.content ?? "").includes(".env"));
+  if (!unsafe.length) return sandboxCheck("Secret build context", "passed", `${ignores.length} .dockerignore file${ignores.length === 1 ? "" : "s"} exclude .env files from image build context.`, ".dockerignore secret policy");
+  return sandboxCheck("Secret build context", "failed", `${unsafe.length} .dockerignore file${unsafe.length === 1 ? "" : "s"} must exclude .env files.`, ".dockerignore secret policy");
 }
 
 function buildSecurityNextActions(checks, repoName) {
@@ -743,13 +800,19 @@ function buildReleaseBundle({ analysis, files, deploymentInputs }) {
   const resolvedFiles = materializeDeploymentInputs(files, deploymentInputs);
   const readinessReport = buildReleaseReadinessReport(analysis, resolvedFiles);
   const manifest = buildReleaseManifest(analysis, resolvedFiles, deploymentInputs);
+  const requiredValues = buildRequiredValuesChecklist(analysis, resolvedFiles, deploymentInputs);
+  const deploymentGuide = buildDeploymentGuide(analysis, resolvedFiles);
+  const sandboxSummary = buildSandboxValidationSummary({ files: resolvedFiles, deploymentInputs, repoName: analysis.repoName });
 
   zip.addFile("README.md", Buffer.from(readinessReport, "utf8"));
-  zip.addFile("pipelineforge-manifest.json", Buffer.from(JSON.stringify(manifest, null, 2), "utf8"));
-  zip.addFile("deployment-inputs.redacted.json", Buffer.from(JSON.stringify(redactDeploymentInputs(deploymentInputs), null, 2), "utf8"));
+  zip.addFile("docs/deployment-guide.md", Buffer.from(deploymentGuide, "utf8"));
+  zip.addFile("docs/required-values.md", Buffer.from(requiredValues, "utf8"));
+  zip.addFile("reports/sandbox-validation.json", Buffer.from(JSON.stringify(sandboxSummary, null, 2), "utf8"));
+  zip.addFile("reports/pipelineforge-manifest.json", Buffer.from(JSON.stringify(manifest, null, 2), "utf8"));
+  zip.addFile("reports/deployment-inputs.redacted.json", Buffer.from(JSON.stringify(redactDeploymentInputs(deploymentInputs), null, 2), "utf8"));
 
   for (const file of resolvedFiles) {
-    zip.addFile(`generated/${sanitizeArchivePath(file.path)}`, Buffer.from(file.content ?? "", "utf8"));
+    zip.addFile(`generated/${bundlePathForGeneratedFile(file.path)}`, Buffer.from(file.content ?? "", "utf8"));
   }
 
   return zip;
@@ -770,6 +833,14 @@ function buildReleaseReadinessReport(analysis, files) {
     `Decision: ${decision.title ?? "Pending review"}`,
     `Generated: ${new Date().toISOString()}`,
     "",
+    "## Bundle Layout",
+    "- generated/container: Docker and Compose files.",
+    "- generated/cicd: Jenkins and Azure pipeline files.",
+    "- generated/kubernetes: shared Kubernetes manifests.",
+    "- generated/cloud-targets: AKS, EKS, and ECS target-specific handoff files.",
+    "- docs: deployment guide and required-values checklist.",
+    "- reports: manifest, redacted inputs, and sandbox validation evidence.",
+    "",
     "## Stack",
     `- Runtime: ${(analysis.stack?.runtime ?? []).join(", ") || "Unknown"}`,
     `- Frameworks: ${(analysis.stack?.frameworks ?? []).join(", ") || "Unknown"}`,
@@ -788,16 +859,93 @@ function buildReleaseReadinessReport(analysis, files) {
     ...(unresolved.length ? unresolved.map((file) => `- ${file.path}: ${file.status}`) : ["- None. All generated files are marked ready."]),
     "",
     "## Generated Files",
-    ...files.map((file) => `- generated/${file.path}: ${file.status} - ${file.purpose}`),
+    ...files.map((file) => `- generated/${bundlePathForGeneratedFile(file.path)}: ${file.status} - ${file.purpose}`),
     "",
     "## Next Gate",
     "Run sandbox validation, runtime dry-runs, security gates, and cloud credential checks before production apply."
   ].join("\n");
 }
 
+function buildDeploymentGuide(analysis, files) {
+  const hasEcs = files.some((file) => file.path.startsWith("ecs/"));
+  const hasEks = files.some((file) => file.path.startsWith("eks/"));
+  const hasAks = files.some((file) => file.path.startsWith("aks/"));
+  const services = analysis.stack?.services ?? [];
+
+  return [
+    "# Deployment Guide",
+    "",
+    "This bundle is generated by PipelineForge from rule-based templates plus validation evidence. Review every placeholder before cloud apply.",
+    "",
+    "## Service Topology",
+    ...(services.length ? services.map((service) => `- ${service.serviceName}: ${service.kind}, port ${service.port}, source ${service.path}`) : ["- Single-service topology inferred from repository root."]),
+    "",
+    "## Recommended Order",
+    "1. Review reports/pipelineforge-manifest.json.",
+    "2. Fill docs/required-values.md with real environment values.",
+    "3. Commit generated files into a release branch.",
+    "4. Build and push container images with the selected CI/CD pipeline.",
+    "5. Run sandbox validation and security gates again after values are replaced.",
+    "6. Apply only the selected cloud target files.",
+    "",
+    "## Target Notes",
+    ...(hasEks ? ["- EKS: use generated/cloud-targets/eks plus generated/kubernetes. Requires ECR, EKS, AWS Load Balancer Controller, secrets, and DNS."] : []),
+    ...(hasEcs ? ["- ECS: use generated/cloud-targets/ecs. Requires ECR, ECS Fargate, ALB target group, private subnets, task roles, secrets, and logs."] : []),
+    ...(hasAks ? ["- AKS: use generated/cloud-targets/aks plus generated/kubernetes. Requires ACR, AKS, ingress controller, secrets, and DNS."] : []),
+    "",
+    "## Locked Until",
+    "- Registry credentials are configured.",
+    "- Runtime secrets are stored outside source control.",
+    "- Public domain and TLS plan are confirmed.",
+    "- Cloud credentials are approved for the target environment.",
+    "- Sandbox and security reports are clean or explicitly accepted."
+  ].join("\n");
+}
+
+function buildRequiredValuesChecklist(analysis, files, deploymentInputs = {}) {
+  const placeholders = [...new Set(files.flatMap((file) => [...String(file.content ?? "").matchAll(/REPLACE_WITH_[A-Z0-9_]+/g)].map((match) => match[0])))].sort();
+  const redactedInputs = redactDeploymentInputs(deploymentInputs);
+  const requiredEnv = analysis.stack?.requiredEnv ?? [];
+
+  return [
+    "# Required Values Checklist",
+    "",
+    "Use this file as the handoff checklist before enabling deployment.",
+    "",
+    "## Runtime Environment",
+    ...(requiredEnv.length ? requiredEnv.map((key) => `- [ ] ${key}`) : ["- [ ] No explicit runtime env variables detected. Review app configuration manually."]),
+    "",
+    "## Template Placeholders",
+    ...(placeholders.length ? placeholders.map((placeholder) => `- [ ] ${placeholder}`) : ["- [x] No unresolved REPLACE_WITH placeholders detected in selected files."]),
+    "",
+    "## Redacted Inputs Snapshot",
+    ...Object.entries(redactedInputs).filter(([, value]) => String(value ?? "").trim()).map(([key, value]) => `- ${key}: ${value}`),
+    "",
+    "## Production Approval",
+    "- [ ] Secrets stored in cloud secret manager or Kubernetes Secret process.",
+    "- [ ] Image tags are immutable.",
+    "- [ ] Rollback process is known.",
+    "- [ ] DNS and TLS ownership confirmed.",
+    "- [ ] Cloud permissions reviewed."
+  ].join("\n");
+}
+
+function buildSandboxValidationSummary({ files, deploymentInputs, repoName }) {
+  const result = runSandboxValidation({ files, deploymentInputs, repoName });
+  return {
+    generatedAt: new Date().toISOString(),
+    repoName,
+    status: result.status,
+    mode: result.mode,
+    summary: result.summary,
+    checks: result.checks,
+    nextActions: result.nextActions
+  };
+}
+
 function buildReleaseManifest(analysis, files, deploymentInputs) {
   return {
-    bundleVersion: 1,
+    bundleVersion: 2,
     repoName: analysis.repoName,
     source: analysis.source,
     generatedAt: new Date().toISOString(),
@@ -806,8 +954,19 @@ function buildReleaseManifest(analysis, files, deploymentInputs) {
     stack: analysis.stack,
     validations: analysis.validations,
     deploymentInputs: redactDeploymentInputs(deploymentInputs),
-    files: files.map(({ path, purpose, status }) => ({ path: `generated/${path}`, purpose, status }))
+    files: files.map(({ path, purpose, status }) => ({ originalPath: path, bundlePath: `generated/${bundlePathForGeneratedFile(path)}`, purpose, status }))
   };
+}
+
+function bundlePathForGeneratedFile(filePath) {
+  const safePath = sanitizeArchivePath(filePath);
+  if (safePath === "Jenkinsfile" || safePath === "azure-pipelines.yml") return `cicd/${safePath}`;
+  if (safePath === "docker-compose.yml" || safePath.toLowerCase().endsWith("dockerfile") || safePath.toLowerCase().endsWith(".dockerignore")) return `container/${safePath}`;
+  if (safePath.startsWith("k8s/")) return `kubernetes/${safePath.slice(4)}`;
+  if (safePath.startsWith("aks/")) return `cloud-targets/aks/${safePath.slice(4)}`;
+  if (safePath.startsWith("eks/")) return `cloud-targets/eks/${safePath.slice(4)}`;
+  if (safePath.startsWith("ecs/")) return `cloud-targets/ecs/${safePath.slice(4)}`;
+  return `misc/${safePath}`;
 }
 
 function redactDeploymentInputs(inputs = {}) {
@@ -920,7 +1079,10 @@ function materializeEcsInputs(content, deploymentInputs = {}) {
     .replaceAll("REPLACE_WITH_ECS_TASK_ROLE_ARN", String(deploymentInputs.ecsTaskRoleArn ?? "").trim() || "REPLACE_WITH_ECS_TASK_ROLE_ARN")
     .replaceAll("REPLACE_WITH_TASK_DEFINITION", String(deploymentInputs.ecsTaskDefinition ?? "").trim() || "REPLACE_WITH_TASK_DEFINITION")
     .replaceAll("REPLACE_WITH_ECS_SERVICE_SECURITY_GROUP_ID", String(deploymentInputs.ecsSecurityGroupId ?? "").trim() || "REPLACE_WITH_ECS_SERVICE_SECURITY_GROUP_ID")
-    .replaceAll("REPLACE_WITH_FRONTEND_TARGET_GROUP_ARN", String(deploymentInputs.ecsTargetGroupArn ?? "").trim() || "REPLACE_WITH_FRONTEND_TARGET_GROUP_ARN");
+    .replaceAll("REPLACE_WITH_FRONTEND_TARGET_GROUP_ARN", String(deploymentInputs.ecsTargetGroupArn ?? "").trim() || "REPLACE_WITH_FRONTEND_TARGET_GROUP_ARN")
+    .replaceAll("REPLACE_WITH_DATABASE_URL_SECRET_ARN", String(deploymentInputs.databaseUrl ?? "").trim() || "REPLACE_WITH_DATABASE_URL_SECRET_ARN")
+    .replaceAll("REPLACE_WITH_TOKEN_SECRET_ARN", String(deploymentInputs.tokenSecret ?? "").trim() || "REPLACE_WITH_TOKEN_SECRET_ARN")
+    .replaceAll("REPLACE_WITH_CORS_ORIGIN_SECRET_ARN", String(deploymentInputs.corsOrigin ?? "").trim() || "REPLACE_WITH_CORS_ORIGIN_SECRET_ARN");
 
   if (subnetIds[0]) resolved = resolved.replaceAll("REPLACE_WITH_PRIVATE_SUBNET_ID_1", subnetIds[0]);
   if (subnetIds[1]) resolved = resolved.replaceAll("REPLACE_WITH_PRIVATE_SUBNET_ID_2", subnetIds[1]);

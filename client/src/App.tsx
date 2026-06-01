@@ -251,7 +251,8 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           repoName: analysis.repoName,
-          files: currentTargetGeneratedFiles
+          files: currentTargetGeneratedFiles,
+          deploymentInputs
         })
       });
       setRuntimeResult(await parseResponse(response));
@@ -484,6 +485,7 @@ function App() {
                 <span><CheckCircle2 size={17} /> Jenkins stage readiness</span>
               </div>
               <RecentAnalyses analyses={recentAnalyses} onReopen={reopenAnalysis} />
+              <RepositoryTrustPanel />
             </div>
           </section>
         ) : null}
@@ -668,6 +670,20 @@ function RecentAnalyses({ analyses, onReopen }: { analyses: Analysis[]; onReopen
           <em>{item.score}/100</em>
         </button>
       ))}
+    </div>
+  );
+}
+
+function RepositoryTrustPanel() {
+  return (
+    <div className="trust-panel">
+      <strong>Repository privacy posture</strong>
+      <span>Uploaded archives are processed in temporary workspaces. PipelineForge stores analysis metadata and generated outputs, not raw source code, and release reports redact secret-like values.</span>
+      <div>
+        <span>Temporary processing</span>
+        <span>Redacted reports</span>
+        <span>No raw repo persistence</span>
+      </div>
     </div>
   );
 }
@@ -1133,6 +1149,7 @@ function GenerationView({
         <DeploymentTargetSelector value={deploymentTarget} onChange={onDeploymentTargetChange} />
         <GeneratedFileFilters active={filter} files={generatedFiles} onChange={onFilterChange} />
         <p className="panel-note">Choose AKS, EKS, or ECS, resolve only that target's inputs in Validate, then export deployable files.</p>
+        <GeneratedFiles files={filteredFiles} />
         <div className="release-bundle-card">
           <div>
             <strong>Release bundle</strong>
@@ -1142,10 +1159,9 @@ function GenerationView({
             {isBundleLoading ? "Packaging..." : "Download bundle"}
           </button>
         </div>
-        <GeneratedFiles files={filteredFiles} />
       </FocusedPanel>
       <FocusedPanel kicker="Blueprint plan" title="Why these files were selected">
-        <TemplateList analysis={analysis} />
+        <TemplateList files={filteredFiles} filter={filter} target={deploymentTarget} />
       </FocusedPanel>
     </div>
   );
@@ -1244,173 +1260,85 @@ function DeploymentInputsPanel({
   onChange: (inputs: DeploymentInputs) => void;
 }) {
   const updateInput = (key: keyof DeploymentInputs, value: string) => onChange({ ...inputs, [key]: value });
+  const requiredFields = requiredInputKeysForTarget(analysis, target);
+  const isMultiService = Boolean(analysis?.stack.services?.length && analysis.stack.services.length > 1);
+  const operationalFields: Array<{ key: keyof DeploymentInputs; label: string }> = [];
+
+  if (analysis?.stack.port === "auto-detect") operationalFields.push({ key: "port", label: "App port" });
+  if (!analysis?.stack.startCommand && !isMultiService) operationalFields.push({ key: "startCommand", label: "Start command" });
+  if (!analysis?.stack.buildCommand && !isMultiService) operationalFields.push({ key: "buildCommand", label: "Build command" });
+
+  const optionalFields: Array<{ key: keyof DeploymentInputs; label: string }> = [
+    { key: "testCommand", label: "Test command" }
+  ];
+
+  const renderInput = ({ key }: { key: keyof DeploymentInputs; label: string }) => {
+    const field = deploymentInputField(key);
+    return (
+      <label key={key}>
+        <span>{field.label}</span>
+        <em>{field.help}</em>
+        <input value={inputs[key]} placeholder={field.placeholder} onChange={(event) => updateInput(key, event.target.value)} />
+      </label>
+    );
+  };
 
   return (
     <div className="deployment-inputs">
-      <div className="input-grid">
-        <label>
-          <span>App port</span>
-          <em>Required for service/task port mapping.</em>
-          <input value={inputs.port} placeholder="3000" onChange={(event) => updateInput("port", event.target.value)} />
-        </label>
-        <label>
-          <span>Image registry</span>
-          <em>Required for ECS/K8s image references.</em>
-          <input
-            value={inputs.imageRegistry}
-            placeholder="123456789.dkr.ecr.ap-south-1.amazonaws.com"
-            onChange={(event) => updateInput("imageRegistry", event.target.value)}
-          />
-        </label>
-        <label>
-          <span>Build command</span>
-          <em>Optional when no build step exists.</em>
-          <input value={inputs.buildCommand} placeholder="npm run build" onChange={(event) => updateInput("buildCommand", event.target.value)} />
-        </label>
-        <label>
-          <span>Start command</span>
-          <em>Required unless Dockerfile already defines runtime.</em>
-          <input value={inputs.startCommand} placeholder="npm run start" onChange={(event) => updateInput("startCommand", event.target.value)} />
-        </label>
-        <label>
-          <span>Test command</span>
-          <em>Optional for today, recommended for CI quality.</em>
-          <input value={inputs.testCommand} placeholder="npm test" onChange={(event) => updateInput("testCommand", event.target.value)} />
-        </label>
-        <label>
-          <span>Public domain</span>
-          <em>Required for ingress/ALB public routing.</em>
-          <input value={inputs.domain} placeholder="app.company.com" onChange={(event) => updateInput("domain", event.target.value)} />
-        </label>
-        <label>
-          <span>Database URL</span>
-          <em>Required for Sovereign backend PostgreSQL.</em>
-          <input value={inputs.databaseUrl} placeholder="postgres://user:pass@host:5432/db" onChange={(event) => updateInput("databaseUrl", event.target.value)} />
-        </label>
-        <label>
-          <span>Token secret</span>
-          <em>Required. Create/store this as a secret.</em>
-          <input value={inputs.tokenSecret} placeholder="secret-store reference" onChange={(event) => updateInput("tokenSecret", event.target.value)} />
-        </label>
-        <label>
-          <span>CORS origin</span>
-          <em>Required. Use the frontend public URL.</em>
-          <input value={inputs.corsOrigin} placeholder="https://app.company.com" onChange={(event) => updateInput("corsOrigin", event.target.value)} />
-        </label>
-        <label>
-          <span>AWS region</span>
-          <em>Required for EKS/ECS AWS commands and logs.</em>
-          <input value={inputs.awsRegion} placeholder="ap-south-1" onChange={(event) => updateInput("awsRegion", event.target.value)} />
-        </label>
-        <label>
-          <span>Image tag</span>
-          <em>Required for immutable AKS/EKS/ECS deploys.</em>
-          <input value={inputs.imageTag} placeholder="build-42 or git-sha" onChange={(event) => updateInput("imageTag", event.target.value)} />
-        </label>
-        {target === "aks" ? (
-          <>
-            <label>
-              <span>AKS cluster name</span>
-              <em>Required for AKS kubectl context handoff.</em>
-              <input value={inputs.aksClusterName} placeholder="prod-aks" onChange={(event) => updateInput("aksClusterName", event.target.value)} />
-            </label>
-            <label>
-              <span>Azure resource group</span>
-              <em>Required for AKS cluster lookup.</em>
-              <input value={inputs.azureResourceGroup} placeholder="rg-production" onChange={(event) => updateInput("azureResourceGroup", event.target.value)} />
-            </label>
-            <label>
-              <span>AKS namespace</span>
-              <em>Required for namespaced Kubernetes apply.</em>
-              <input value={inputs.aksNamespace} placeholder="default" onChange={(event) => updateInput("aksNamespace", event.target.value)} />
-            </label>
-            <label>
-              <span>AKS ingress class</span>
-              <em>Required if ingress controller is not default.</em>
-              <input value={inputs.aksIngressClass} placeholder="nginx" onChange={(event) => updateInput("aksIngressClass", event.target.value)} />
-            </label>
-          </>
-        ) : null}
-        {target === "eks" ? (
-          <>
-            <label>
-              <span>EKS cluster name</span>
-              <em>Required for aws eks update-kubeconfig.</em>
-              <input value={inputs.eksClusterName} placeholder="prod-eks" onChange={(event) => updateInput("eksClusterName", event.target.value)} />
-            </label>
-            <label>
-              <span>EKS namespace</span>
-              <em>Required for namespaced Kubernetes apply.</em>
-              <input value={inputs.eksNamespace} placeholder="default" onChange={(event) => updateInput("eksNamespace", event.target.value)} />
-            </label>
-            <label>
-              <span>EKS ingress class</span>
-              <em>Required for AWS Load Balancer Controller ingress.</em>
-              <input value={inputs.eksIngressClass} placeholder="alb" onChange={(event) => updateInput("eksIngressClass", event.target.value)} />
-            </label>
-          </>
-        ) : null}
-        {target === "ecs" ? (
-          <>
-            <label>
-              <span>ECS cluster ARN</span>
-              <em>Required for ecs/service.json.</em>
-              <input value={inputs.ecsClusterArn} placeholder="arn:aws:ecs:..." onChange={(event) => updateInput("ecsClusterArn", event.target.value)} />
-            </label>
-            <label>
-              <span>Task execution role ARN</span>
-              <em>Required for ECR pull and logs.</em>
-              <input value={inputs.ecsTaskExecutionRoleArn} placeholder="arn:aws:iam::...:role/..." onChange={(event) => updateInput("ecsTaskExecutionRoleArn", event.target.value)} />
-            </label>
-            <label>
-              <span>Task role ARN</span>
-              <em>Required for app AWS permissions.</em>
-              <input value={inputs.ecsTaskRoleArn} placeholder="arn:aws:iam::...:role/..." onChange={(event) => updateInput("ecsTaskRoleArn", event.target.value)} />
-            </label>
-            <label>
-              <span>Task definition</span>
-              <em>Required after registering ECS task definition.</em>
-              <input value={inputs.ecsTaskDefinition} placeholder="sovereign-code:12 or task definition ARN" onChange={(event) => updateInput("ecsTaskDefinition", event.target.value)} />
-            </label>
-            <label>
-              <span>Private subnet IDs</span>
-              <em>Required for Fargate networking.</em>
-              <input value={inputs.ecsSubnetIds} placeholder="subnet-aaa, subnet-bbb" onChange={(event) => updateInput("ecsSubnetIds", event.target.value)} />
-            </label>
-            <label>
-              <span>ECS security group ID</span>
-              <em>Required for Fargate service traffic.</em>
-              <input value={inputs.ecsSecurityGroupId} placeholder="sg-0123456789" onChange={(event) => updateInput("ecsSecurityGroupId", event.target.value)} />
-            </label>
-            <label>
-              <span>ALB target group ARN</span>
-              <em>Required for ECS frontend service.</em>
-              <input value={inputs.ecsTargetGroupArn} placeholder="arn:aws:elasticloadbalancing:..." onChange={(event) => updateInput("ecsTargetGroupArn", event.target.value)} />
-            </label>
-          </>
-        ) : null}
-      </div>
-      <div className="resolution-list">
-        <span className={inputs.port ? "resolved" : ""}>Port mapping</span>
-        <span className={inputs.imageRegistry ? "resolved" : ""}>Container registry</span>
-        <span className={inputs.domain ? "resolved" : ""}>Ingress host</span>
-        <span className={inputs.databaseUrl ? "resolved" : ""}>Database secret</span>
-        <span className={inputs.tokenSecret ? "resolved" : ""}>Token secret</span>
-        <span className={inputs.corsOrigin ? "resolved" : ""}>CORS origin</span>
-        {target === "aks" ? <span className={inputs.aksClusterName ? "resolved" : ""}>AKS cluster</span> : null}
-        {target === "aks" ? <span className={inputs.azureResourceGroup ? "resolved" : ""}>Resource group</span> : null}
-        {target === "eks" ? <span className={inputs.eksClusterName ? "resolved" : ""}>EKS cluster</span> : null}
-        {target === "eks" || target === "ecs" ? <span className={inputs.awsRegion ? "resolved" : ""}>AWS region</span> : null}
-        {target === "ecs" ? <span className={inputs.ecsClusterArn ? "resolved" : ""}>ECS cluster</span> : null}
-        {target === "ecs" ? <span className={inputs.ecsTaskExecutionRoleArn ? "resolved" : ""}>Execution role</span> : null}
-        {target === "ecs" ? <span className={inputs.ecsTaskDefinition ? "resolved" : ""}>Task definition</span> : null}
-        {target === "ecs" ? <span className={inputs.ecsSubnetIds ? "resolved" : ""}>Private subnets</span> : null}
-        {target === "ecs" ? <span className={inputs.ecsSecurityGroupId ? "resolved" : ""}>ECS security group</span> : null}
-        {target === "ecs" ? <span className={inputs.ecsTargetGroupArn ? "resolved" : ""}>Target group</span> : null}
-        <span className={analysis?.stack.startCommand || inputs.startCommand ? "resolved" : ""}>Runtime start command</span>
-      </div>
+      <InputSection title="Required for this target" items={requiredFields} renderInput={renderInput} />
+      {operationalFields.length ? <InputSection title="App runtime gaps" items={operationalFields} renderInput={renderInput} /> : null}
+      <InputSection title="Optional CI quality" items={optionalFields} renderInput={renderInput} />
     </div>
   );
+}
+
+function InputSection({
+  title,
+  items,
+  renderInput
+}: {
+  title: string;
+  items: Array<{ key: keyof DeploymentInputs; label: string }>;
+  renderInput: (item: { key: keyof DeploymentInputs; label: string }) => ReactNode;
+}) {
+  return (
+    <div className="input-section">
+      <strong>{title}</strong>
+      <div className="input-grid">{items.map(renderInput)}</div>
+    </div>
+  );
+}
+
+function deploymentInputField(key: keyof DeploymentInputs) {
+  const fields: Record<keyof DeploymentInputs, { label: string; help: string; placeholder: string }> = {
+    port: { label: "App port", help: "Required only when the app port cannot be detected.", placeholder: "3000 or backend:8080, frontend:80" },
+    buildCommand: { label: "Build command", help: "Required only when the app has a real build step.", placeholder: "npm run build" },
+    startCommand: { label: "Start command", help: "Required when Dockerfile/runtime command is missing.", placeholder: "npm run start" },
+    testCommand: { label: "Test command", help: "Optional, but recommended before production promotion.", placeholder: "npm test" },
+    imageRegistry: { label: "Image registry", help: "Required for Kubernetes/ECS image references.", placeholder: "123456789.dkr.ecr.ap-south-1.amazonaws.com" },
+    domain: { label: "Public domain", help: "Required for ingress or public load balancer routing.", placeholder: "app.company.com" },
+    databaseUrl: { label: "Database URL", help: "Required when the app needs PostgreSQL or another backing database.", placeholder: "postgres://user:pass@host:5432/db" },
+    tokenSecret: { label: "Token secret", help: "Required when the app expects JWT/session signing secret.", placeholder: "secret-store reference" },
+    corsOrigin: { label: "CORS origin", help: "Required when backend restricts browser origins.", placeholder: "https://app.company.com" },
+    awsRegion: { label: "AWS region", help: "Required for EKS/ECS AWS commands and logs.", placeholder: "ap-south-1" },
+    imageTag: { label: "Image tag", help: "Required for immutable deployment references.", placeholder: "build-42 or git-sha" },
+    aksClusterName: { label: "AKS cluster name", help: "Required for AKS kubectl context handoff.", placeholder: "prod-aks" },
+    aksNamespace: { label: "AKS namespace", help: "Required for namespaced Kubernetes apply.", placeholder: "default" },
+    azureResourceGroup: { label: "Azure resource group", help: "Required for AKS cluster lookup.", placeholder: "rg-production" },
+    aksIngressClass: { label: "AKS ingress class", help: "Required if ingress controller is not default.", placeholder: "nginx" },
+    eksClusterName: { label: "EKS cluster name", help: "Required for aws eks update-kubeconfig.", placeholder: "prod-eks" },
+    eksNamespace: { label: "EKS namespace", help: "Required for namespaced Kubernetes apply.", placeholder: "default" },
+    eksIngressClass: { label: "EKS ingress class", help: "Required for AWS Load Balancer Controller ingress.", placeholder: "alb" },
+    ecsClusterArn: { label: "ECS cluster ARN", help: "Required for ecs/service.json.", placeholder: "arn:aws:ecs:..." },
+    ecsTaskExecutionRoleArn: { label: "Task execution role ARN", help: "Required for ECR pull and logs.", placeholder: "arn:aws:iam::...:role/..." },
+    ecsTaskRoleArn: { label: "Task role ARN", help: "Required for app AWS permissions.", placeholder: "arn:aws:iam::...:role/..." },
+    ecsTaskDefinition: { label: "Task definition", help: "Required after registering ECS task definition.", placeholder: "sovereign-code:12 or task definition ARN" },
+    ecsSubnetIds: { label: "Private subnet IDs", help: "Required for Fargate networking.", placeholder: "subnet-aaa, subnet-bbb" },
+    ecsSecurityGroupId: { label: "ECS security group ID", help: "Required for Fargate service traffic.", placeholder: "sg-0123456789" },
+    ecsTargetGroupArn: { label: "ALB target group ARN", help: "Required for ECS frontend service.", placeholder: "arn:aws:elasticloadbalancing:..." }
+  };
+
+  return fields[key];
 }
 
 function ValidationView({
@@ -1498,7 +1426,7 @@ function ValidationView({
       <FocusedPanel kicker="Sandbox validation" title="Generated config execution check" className="wide-panel">
         <div className="validation-command-grid">
           <div className="validation-stack">
-            <RuntimeToolchainPanel isLoading={isToolchainLoading} onInspect={onInspectToolchain} toolchain={runtimeToolchain} />
+              <RuntimeToolchainPanel isLoading={isToolchainLoading} onInspect={onInspectToolchain} toolchain={runtimeToolchain} />
             <div className="validation-input-card">
               <div className="validation-input-heading">
                 <div>
@@ -1512,7 +1440,6 @@ function ValidationView({
               <DeploymentTargetSelector value={deploymentTarget} onChange={onDeploymentTargetChange} />
               <DeploymentInputsPanel analysis={analysis} inputs={deploymentInputs} target={deploymentTarget} onChange={onDeploymentInputsChange} />
             </div>
-            {unresolvedCount ? <MissingGeneratedInputs files={unresolvedFiles} /> : null}
           </div>
           <div className="validation-stack">
             <div className="validation-action-card primary-action-card">
@@ -1578,12 +1505,12 @@ function getMissingDeploymentInputs(
   return [...new Set(missing)];
 }
 
-function requiredInputKeysForTarget(analysis: Analysis, target: DeploymentTarget): Array<{ key: keyof DeploymentInputs; label: string }> {
-  const hasKubernetesFiles = analysis.generatedFiles.some((file) => file.path.startsWith("k8s/"));
-  const hasEcsFiles = analysis.generatedFiles.some((file) => file.path.startsWith("ecs/"));
-  const needsDatabase = analysis.stack.databases?.length || analysis.stack.requiredEnv?.some((key) => key.includes("DATABASE"));
-  const needsToken = analysis.stack.requiredEnv?.some((key) => key.includes("TOKEN") || key.includes("SECRET"));
-  const needsCors = analysis.stack.requiredEnv?.some((key) => key.includes("CORS"));
+function requiredInputKeysForTarget(analysis: Analysis | null, target: DeploymentTarget): Array<{ key: keyof DeploymentInputs; label: string }> {
+  const hasKubernetesFiles = analysis?.generatedFiles.some((file) => file.path.startsWith("k8s/"));
+  const hasEcsFiles = analysis?.generatedFiles.some((file) => file.path.startsWith("ecs/"));
+  const needsDatabase = analysis?.stack.databases?.length || analysis?.stack.requiredEnv?.some((key) => key.includes("DATABASE"));
+  const needsToken = analysis?.stack.requiredEnv?.some((key) => key.includes("TOKEN") || key.includes("SECRET"));
+  const needsCors = analysis?.stack.requiredEnv?.some((key) => key.includes("CORS"));
   const common: Array<{ key: keyof DeploymentInputs; label: string }> = [
     { key: "imageRegistry", label: "Image registry" },
     { key: "imageTag", label: "Image tag" }
@@ -1743,7 +1670,7 @@ function SecurityGatePanel({
         </button>
       </div>
       <ActionRequirements title="Needed for security gates" missing={missing} readyText="No deployment values required. Generated target files can be scanned now." />
-      {result ? <SandboxResultView result={result} /> : null}
+      {result ? <CollapsibleResultView result={result} title="Security evidence" /> : null}
       <div className="autofix-panel">
         <div>
           <strong>Safe auto-fix</strong>
@@ -1808,7 +1735,26 @@ function RuntimeDryRunPanel({
         </button>
       </div>
       <ActionRequirements title="Needed for runtime dry-runs" missing={missing} readyText={`Sandbox passed. ${target.toUpperCase()} client dry-runs can start.`} />
-      {result ? <SandboxResultView result={result} /> : null}
+      {result ? <CollapsibleResultView result={result} title="Runtime evidence" /> : null}
+    </div>
+  );
+}
+
+function CollapsibleResultView({ result, title }: { result: SandboxResult; title: string }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  return (
+    <div className="collapsible-result">
+      <div className="validation-input-heading">
+        <div>
+          <strong>{title}</strong>
+          <span>{result.summary.passed} passed, {result.summary.warning} warnings, {result.summary.failed} failed, {result.summary.skipped} skipped.</span>
+        </div>
+        <button className="ghost-button" type="button" onClick={() => setIsExpanded((value) => !value)}>
+          {isExpanded ? "Hide evidence" : "Show evidence"}
+        </button>
+      </div>
+      {isExpanded ? <SandboxResultView result={result} /> : null}
     </div>
   );
 }
@@ -1822,6 +1768,8 @@ function RuntimeToolchainPanel({
   onInspect: () => void;
   toolchain: RuntimeToolchain | null;
 }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
   return (
     <div className="toolchain-panel">
       <div className="validation-input-heading">
@@ -1829,10 +1777,17 @@ function RuntimeToolchainPanel({
           <strong>Runtime toolchain</strong>
           <span>{toolchain ? `Mode: ${toolchain.mode}` : "Inspect local tools before real Docker and Kubernetes execution."}</span>
         </div>
-        <button className="ghost-button" type="button" disabled={isLoading} onClick={onInspect}>
-          <Settings2 size={17} />
-          {isLoading ? "Inspecting..." : "Inspect tools"}
-        </button>
+        <div className="toolchain-actions">
+          <button className="ghost-button" type="button" disabled={isLoading} onClick={onInspect}>
+            <Settings2 size={17} />
+            {isLoading ? "Inspecting..." : "Inspect tools"}
+          </button>
+          {toolchain ? (
+            <button className="ghost-button" type="button" onClick={() => setIsExpanded((value) => !value)}>
+              {isExpanded ? "Hide details" : "Show details"}
+            </button>
+          ) : null}
+        </div>
       </div>
       {toolchain ? (
         <>
@@ -1840,7 +1795,8 @@ function RuntimeToolchainPanel({
             <Metric icon={<CheckCircle2 size={20} />} label="Available" value={toolchain.summary.available.toString()} />
             <Metric icon={<XCircle size={20} />} label="Missing" value={toolchain.summary.missing.toString()} />
           </div>
-          <div className="toolchain-list">
+          <p className="toolchain-note">Availability is calculated from local Docker, Compose, kubectl, Terraform, Trivy, Node, and package-manager checks exposed by the PipelineForge API.</p>
+          {isExpanded ? <div className="toolchain-list">
             {toolchain.tools.map((tool) => (
               <div key={tool.name}>
                 {tool.status === "available" ? <CheckCircle2 className="status passed" size={19} /> : <Activity className="status warning" size={19} />}
@@ -1852,22 +1808,9 @@ function RuntimeToolchainPanel({
                 <em className={`review-badge ${tool.status === "available" ? "ready" : "needs-input"}`}>{tool.required ? "Required" : "Optional"}</em>
               </div>
             ))}
-          </div>
+          </div> : null}
         </>
       ) : null}
-    </div>
-  );
-}
-
-function MissingGeneratedInputs({ files }: { files: GeneratedFile[] }) {
-  return (
-    <div className="missing-inputs">
-      <strong>Still waiting on</strong>
-      <div>
-        {files.map((file) => (
-          <span key={file.path}>{file.path}</span>
-        ))}
-      </div>
     </div>
   );
 }
@@ -1956,7 +1899,7 @@ function PipelineView({
         <FocusedPanel kicker="Pipeline preview" title={pipelineFile?.path ?? "Pipeline file"}>
           {pipelineFile ? (
             <div className="generated-list">
-              <details open>
+              <details>
                 <summary>
                   <strong>{pipelineFile.path}</strong>
                   <span>{pipelineFile.purpose}</span>
@@ -2132,11 +2075,13 @@ function RuleList({ analysis }: { analysis: Analysis | null }) {
   );
 }
 
-function TemplateList({ analysis }: { analysis: Analysis | null }) {
-  const templates = analysis?.templates ?? [
-    { name: "Dockerfile", key: "stack-aware", description: "Selected after framework detection." },
-    { name: "Jenkinsfile", key: "modular", description: "Stages enable based on runtime signals." },
-    { name: "docker-compose.yml", key: "sandbox", description: "Local smoke-test deployment." }
+function TemplateList({ files, filter, target }: { files: GeneratedFile[]; filter: GeneratedFileFilter; target: DeploymentTarget }) {
+  const templates = files.length ? files.map((file) => ({
+    name: file.path,
+    key: blueprintKey(file.path, target),
+    description: file.purpose
+  })) : [
+    { name: "No files selected", key: filter, description: "Choose a generated-file filter to inspect its blueprint selection." }
   ];
 
   return (
@@ -2150,6 +2095,17 @@ function TemplateList({ analysis }: { analysis: Analysis | null }) {
       ))}
     </div>
   );
+}
+
+function blueprintKey(path: string, target: DeploymentTarget) {
+  if (path.startsWith("ecs/")) return "aws-ecs-fargate";
+  if (path.startsWith("eks/")) return "aws-eks-overlay";
+  if (path.startsWith("aks/")) return "azure-aks-handoff";
+  if (path.startsWith("k8s/")) return `${target}-kubernetes-base`;
+  if (path.toLowerCase().includes("docker")) return "container-runtime";
+  if (path === "Jenkinsfile") return "jenkins-modular-ci";
+  if (path === "azure-pipelines.yml") return "azure-pipelines-ci";
+  return "stack-aware";
 }
 
 function PipelineList({ analysis }: { analysis: Analysis | null }) {
@@ -2336,7 +2292,10 @@ function applyEcsDeploymentInputs(content: string, inputs: DeploymentInputs) {
     .replaceAll("REPLACE_WITH_ECS_TASK_ROLE_ARN", inputs.ecsTaskRoleArn.trim() || "REPLACE_WITH_ECS_TASK_ROLE_ARN")
     .replaceAll("REPLACE_WITH_TASK_DEFINITION", inputs.ecsTaskDefinition.trim() || "REPLACE_WITH_TASK_DEFINITION")
     .replaceAll("REPLACE_WITH_ECS_SERVICE_SECURITY_GROUP_ID", inputs.ecsSecurityGroupId.trim() || "REPLACE_WITH_ECS_SERVICE_SECURITY_GROUP_ID")
-    .replaceAll("REPLACE_WITH_FRONTEND_TARGET_GROUP_ARN", inputs.ecsTargetGroupArn.trim() || "REPLACE_WITH_FRONTEND_TARGET_GROUP_ARN");
+    .replaceAll("REPLACE_WITH_FRONTEND_TARGET_GROUP_ARN", inputs.ecsTargetGroupArn.trim() || "REPLACE_WITH_FRONTEND_TARGET_GROUP_ARN")
+    .replaceAll("REPLACE_WITH_DATABASE_URL_SECRET_ARN", inputs.databaseUrl.trim() || "REPLACE_WITH_DATABASE_URL_SECRET_ARN")
+    .replaceAll("REPLACE_WITH_TOKEN_SECRET_ARN", inputs.tokenSecret.trim() || "REPLACE_WITH_TOKEN_SECRET_ARN")
+    .replaceAll("REPLACE_WITH_CORS_ORIGIN_SECRET_ARN", inputs.corsOrigin.trim() || "REPLACE_WITH_CORS_ORIGIN_SECRET_ARN");
 
   if (subnetIds[0]) resolved = resolved.replaceAll("REPLACE_WITH_PRIVATE_SUBNET_ID_1", subnetIds[0]);
   if (subnetIds[1]) resolved = resolved.replaceAll("REPLACE_WITH_PRIVATE_SUBNET_ID_2", subnetIds[1]);

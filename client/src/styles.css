@@ -1076,6 +1076,41 @@ code {
   font-weight: 800;
 }
 
+.trust-panel {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+  padding: 14px;
+  border: 1px solid rgba(126, 176, 255, 0.16);
+  border-radius: 8px;
+  background: rgba(4, 9, 19, 0.48);
+}
+
+.trust-panel strong {
+  color: #f7fbff;
+}
+
+.trust-panel > span {
+  color: #a9c1df;
+  line-height: 1.55;
+}
+
+.trust-panel > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.trust-panel > div span {
+  padding: 6px 9px;
+  border: 1px solid rgba(91, 230, 184, 0.22);
+  border-radius: 999px;
+  color: #91ffd8;
+  background: rgba(46, 191, 143, 0.12);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
 .generated-list details {
   overflow: hidden;
 }
@@ -1095,7 +1130,7 @@ code {
   grid-template-columns: minmax(0, 1fr) max-content;
   gap: 16px;
   align-items: center;
-  margin-bottom: 14px;
+  margin-top: 16px;
   padding: 14px;
   border: 1px solid rgba(93, 181, 255, 0.24);
   border-radius: 8px;
@@ -1176,7 +1211,17 @@ code {
 
 .deployment-inputs {
   display: grid;
-  gap: 18px;
+  gap: 14px;
+}
+
+.input-section {
+  display: grid;
+  gap: 10px;
+}
+
+.input-section > strong {
+  color: #eef6ff;
+  font-size: 0.9rem;
 }
 
 .input-grid {
@@ -1216,28 +1261,6 @@ code {
 .input-grid input:focus {
   border-color: rgba(93, 181, 255, 0.78);
   box-shadow: 0 0 0 3px rgba(35, 109, 255, 0.16);
-}
-
-.resolution-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.resolution-list span {
-  padding: 7px 10px;
-  border: 1px solid rgba(126, 176, 255, 0.18);
-  border-radius: 999px;
-  color: #9fb3cd;
-  background: rgba(4, 9, 19, 0.48);
-  font-size: 0.82rem;
-  font-weight: 800;
-}
-
-.resolution-list span.resolved {
-  color: #91ffd8;
-  border-color: rgba(91, 230, 184, 0.28);
-  background: rgba(46, 191, 143, 0.14);
 }
 
 .resolution-summary {
@@ -1309,6 +1332,20 @@ code {
   margin-bottom: 0;
 }
 
+.toolchain-note {
+  margin: -4px 0 0;
+  color: #8fa6c3;
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.toolchain-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .validation-input-heading {
   display: flex;
   align-items: flex-start;
@@ -1376,7 +1413,8 @@ code {
 }
 
 .autofix-panel,
-.autofix-result {
+.autofix-result,
+.collapsible-result {
   display: grid;
   gap: 14px;
   padding: 14px;
