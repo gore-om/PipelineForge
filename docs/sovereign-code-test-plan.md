@@ -29,7 +29,17 @@ Validate that PipelineForge can analyze `Sovereign_Code.zip`, identify what the 
 
 ## Current PipelineForge Result
 
-Latest verification through `POST /api/analyze/upload` and `POST /api/sandbox/validate`:
+Latest automated verification:
+
+```bash
+npm run test:sovereign
+```
+
+Current result: **52/52 checks passed**.
+
+The regression runner starts a temporary PipelineForge API, disables analysis persistence, uploads `D:\Sovereign_Code.zip`, validates multi-service detection, confirms generated AKS/EKS/ECS assets, runs ECS sandbox/runtime/security validation, previews safe auto-fixes, and inspects the release bundle ZIP for required docs, reports, generated files, and redacted secrets.
+
+Latest verification through `POST /api/analyze/upload`, `POST /api/sandbox/validate`, `POST /api/sandbox/runtime`, `POST /api/security/gates`, and `POST /api/release-bundle`:
 
 - Correct:
   - ZIP upload works.
@@ -50,6 +60,8 @@ Latest verification through `POST /api/analyze/upload` and `POST /api/sandbox/va
   - Validate UI asks for registry, domain, database URL, token secret, and CORS origin before release checks.
   - Keeps cloud deployment blocked until runtime secrets and deployment inputs are mapped.
   - Static sandbox validation passes all 8 checks after registry, domain, and secret inputs are supplied.
+  - ECS runtime dry-run resolves placeholders and validates ECS task/service JSON structure.
+  - Release bundle includes README, deployment guide, required values checklist, sandbox evidence, manifest, redacted inputs, Kubernetes assets, CI/CD files, EKS notes, and ECS files.
 
 - Still incomplete:
   - UI does not yet expose a dedicated service topology panel.
@@ -113,6 +125,8 @@ PipelineForge should ask for these before deployment:
 | SC-026 | Validation | Evidence bundle | Shows config, sandbox, runtime, and security evidence | Pass |
 | SC-027 | Release decision | Blocking readiness | Deployment remains blocked until service model and required inputs are resolved | Pass |
 | SC-028 | UX | Recommendations | Recommendations point to exact stage and exact missing repo/cloud item | Partial |
+| SC-029 | Runtime validation | ECS dry-run after inputs | Placeholders resolve and ECS task/service JSON is structurally valid | Pass |
+| SC-030 | Release bundle | Export bundle after inputs | Bundle includes docs, reports, generated assets, and redacted secret inputs | Pass |
 
 ## Acceptance Criteria For This Repo
 

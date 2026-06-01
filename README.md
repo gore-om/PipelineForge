@@ -21,7 +21,7 @@ PipelineForge is a production-ready DevOps bootstrap and validation platform. It
 - Backend project-history persistence for recent analyses
 - Static sandbox validation and security gate previews
 - ECS Fargate task/service validation for generated AWS deployments
-- AWS/Azure infra planner and manual deployment handoff checklist
+- Manual deployment handoff checklist and release evidence view
 
 ## Run Locally
 
@@ -34,10 +34,26 @@ Frontend: `http://localhost:5173`
 
 Backend/API: `http://localhost:8095`
 
+## Regression Test
+
+Run the Sovereign Code regression before manual cloud testing:
+
+```bash
+npm run test:sovereign
+```
+
+By default, the test uses `D:\Sovereign_Code.zip`. To use another archive:
+
+```bash
+npm run test:sovereign -- D:\path\to\repo.zip
+```
+
+The runner starts the API on a temporary test port, disables analysis persistence, uploads the ZIP, validates multi-service detection, checks AKS/EKS/ECS generated assets, runs ECS sandbox/runtime/security APIs, and verifies the release bundle layout with redacted secrets.
+
 ## Next Stages
 
 1. Add project persistence, authentication, and workspace history.
-2. Add bundled generated-output downloads.
+2. Add a service topology panel for frontend/backend/database visibility.
 3. Add executable Docker, Compose, Kubernetes, Terraform, and security validations.
 4. Expand generated AWS/Azure Terraform beyond starter previews.
 5. Add cost estimation, drift detection, and observability gates.
@@ -52,7 +68,6 @@ Production deployment code now lives in:
 - `server/Dockerfile`
 - `Jenkinsfile.production`
 - `jenkins.yaml`
-- `infra/aws-production`
 
 Target AWS services:
 

@@ -285,6 +285,27 @@ The production CI/CD path now uses Jenkins instead of Azure Pipelines:
 - `jenkins.yaml` documents the Jenkins job contract, required tools, credentials, stages, and AWS permissions.
 - The old `azure-pipelines.production.yml` file was removed.
 
+## Quality Gate Added In This Stage
+
+PipelineForge now has an automated Sovereign Code regression runner:
+
+```bash
+npm run test:sovereign
+```
+
+The test starts the API on a temporary port with analysis persistence disabled, uploads `D:\Sovereign_Code.zip`, and verifies:
+
+- Multi-service detection for backend and frontend.
+- Backend port `8080` and frontend port `80`.
+- PostgreSQL and required secret/runtime env detection.
+- Generated Docker, Compose, Kubernetes, Jenkins, Azure Pipelines, AKS, EKS, and ECS files.
+- AKS/EKS/ECS target filtering behavior.
+- ECS sandbox validation, runtime dry-run, and security gates.
+- Auto-fix preview stability.
+- Release bundle structure, manifest version, and secret redaction.
+
+Latest result: **52/52 checks passed**.
+
 ## Remaining Work Before Calling PipelineForge Production-Ready
 
 ### Product Features
@@ -331,18 +352,18 @@ The production CI/CD path now uses Jenkins instead of Azure Pipelines:
 
 Approximate status:
 
-- UI workflow: 70%
-- Analyzer and validation engine: 65%
-- Multi-service support: 60%
-- Generated Docker/Compose/Kubernetes/CI assets: 68%
-- Sandbox/static checks: 55%
-- Real executable validation: 30%
+- UI workflow: 72%
+- Analyzer and validation engine: 72%
+- Multi-service support: 70%
+- Generated Docker/Compose/Kubernetes/CI assets: 74%
+- Sandbox/static checks: 68%
+- Real executable validation: 42%
 - Cloud infra generation for user apps: 30%
 - PipelineForge self-deployment infra: 58%
 - Authentication, persistence, audit, teams: 15%
 
 Overall product production readiness:
 
-About 60%.
+About 70%.
 
-This is much stronger than the earlier 35% because PipelineForge now has real multi-service detection, service-aware generation, input-aware validation, sandbox checks, release bundle export, project history persistence, production handoff docs, Jenkins production pipeline files, and a stronger AWS deployment foundation. It is still not 100% because real cloud apply, authentication, durable cloud artifact storage, executable validation, monitoring alarms, and full user-app Terraform generation are not complete yet.
+This is much stronger than the earlier 35% because PipelineForge now has real multi-service detection, service-aware generation, input-aware validation, sandbox checks, runtime/security evidence, release bundle export, project history persistence, production handoff docs, Jenkins production pipeline files, a stronger AWS deployment foundation, and an automated Sovereign Code regression gate. It is still not 100% because real cloud apply, authentication, durable cloud artifact storage, deeper executable validation, monitoring alarms, and full user-app Terraform generation are not complete yet.
