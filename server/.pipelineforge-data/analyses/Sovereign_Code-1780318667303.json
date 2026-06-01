@@ -1,0 +1,571 @@
+{
+  "repoName": "Sovereign_Code",
+  "source": "upload",
+  "stack": {
+    "runtime": [
+      "Node.js",
+      "JavaScript"
+    ],
+    "frameworks": [
+      "Express",
+      "Docker-ready",
+      "Multi-service"
+    ],
+    "databases": [
+      "PostgreSQL"
+    ],
+    "packageManager": "npm",
+    "buildCommand": null,
+    "startCommand": "npm run start",
+    "testCommand": null,
+    "port": "backend:8080, frontend:80",
+    "buildRequired": false,
+    "services": [
+      {
+        "name": "ledgerly-api",
+        "serviceName": "ledgerly-backend",
+        "kind": "backend",
+        "path": "app/backend",
+        "port": "8080",
+        "healthPath": "/health",
+        "packageManager": "npm",
+        "buildCommand": null,
+        "startCommand": "npm run start",
+        "testCommand": null,
+        "hasDockerfile": true,
+        "buildRequired": false,
+        "dependencies": [
+          "cors",
+          "dotenv",
+          "express",
+          "helmet",
+          "pg",
+          "pino",
+          "pino-http"
+        ]
+      },
+      {
+        "name": "ledgerly-frontend",
+        "serviceName": "ledgerly-frontend",
+        "kind": "frontend",
+        "path": "app/frontend",
+        "port": "80",
+        "healthPath": "/health",
+        "packageManager": "none",
+        "buildCommand": null,
+        "startCommand": "nginx",
+        "testCommand": null,
+        "hasDockerfile": true,
+        "buildRequired": false,
+        "dependencies": []
+      }
+    ],
+    "requiredEnv": [
+      "PORT",
+      "APP_ENV",
+      "APP_VERSION",
+      "DATABASE_URL",
+      "DB_SSL",
+      "CORS_ORIGIN",
+      "LOG_LEVEL",
+      "TOKEN_SECRET"
+    ]
+  },
+  "report": {
+    "confidence": 100,
+    "entrypoints": [
+      "app/backend/src/server.js",
+      "app/frontend/app.js"
+    ],
+    "fileSummary": {
+      "totalFiles": 13,
+      "sourceFiles": 2,
+      "configFiles": 1,
+      "devopsFiles": 4
+    },
+    "riskSummary": {
+      "passed": 7,
+      "warning": 4,
+      "failed": 0
+    },
+    "recommendations": [
+      "Review multi-service frontend, backend, database, and ingress deployment inputs.",
+      "Map required environment variables to CI/CD variables and cloud secret stores.",
+      "Add .dockerignore to keep secrets, dependencies, and build noise out of images."
+    ]
+  },
+  "preflight": {
+    "status": "ready",
+    "gates": [
+      {
+        "name": "Stack confidence",
+        "status": "passed",
+        "message": "Detected Node.js, JavaScript."
+      },
+      {
+        "name": "Dependency manifest",
+        "status": "passed",
+        "message": "Package manager detected: npm."
+      },
+      {
+        "name": "Build command",
+        "status": "passed",
+        "message": "No artifact build step required for detected Dockerized services."
+      },
+      {
+        "name": "Start command",
+        "status": "passed",
+        "message": "Start command ready: npm run start."
+      },
+      {
+        "name": "Container files",
+        "status": "warning",
+        "message": "Dockerfile is available for review before sandbox build."
+      },
+      {
+        "name": "Service model",
+        "status": "passed",
+        "message": "2 deployable services detected."
+      },
+      {
+        "name": "Security scan",
+        "status": "warning",
+        "message": "Trivy scan will run after Docker is available locally."
+      },
+      {
+        "name": "Cloud credentials",
+        "status": "warning",
+        "message": "Cloud apply is disabled until credentials and target subscription/account are configured."
+      }
+    ]
+  },
+  "infraPlan": {
+    "azure": {
+      "provider": "azure",
+      "summary": "Azure landing plan for multi-service apps on ACR, AKS, managed PostgreSQL, secrets, and monitoring.",
+      "resources": [
+        {
+          "name": "Resource Group",
+          "purpose": "Logical boundary for all PipelineForge-created Azure resources.",
+          "required": true
+        },
+        {
+          "name": "Azure Container Registry",
+          "purpose": "Stores frontend and backend application images used by AKS.",
+          "required": true
+        },
+        {
+          "name": "AKS Cluster",
+          "purpose": "Runs the application containers with Kubernetes service and ingress manifests.",
+          "required": true
+        },
+        {
+          "name": "ACR Pull Role Assignment",
+          "purpose": "Allows AKS kubelet identity to pull images from ACR.",
+          "required": true
+        },
+        {
+          "name": "Azure Pipelines Service Connection",
+          "purpose": "Pushes validated images to ACR and deploys reviewed manifests.",
+          "required": true
+        },
+        {
+          "name": "Azure Database for PostgreSQL",
+          "purpose": "Managed database detected from app dependencies.",
+          "required": true
+        },
+        {
+          "name": "Key Vault",
+          "purpose": "Stores DATABASE_URL, TOKEN_SECRET, and runtime secrets outside source control.",
+          "required": true
+        },
+        {
+          "name": "Log Analytics Workspace",
+          "purpose": "Collects AKS logs and metrics for feedback.",
+          "required": true
+        }
+      ],
+      "terraformFiles": [
+        {
+          "path": "infra/azure/main.tf",
+          "status": "needs-input",
+          "content": "terraform {\n  required_providers {\n    azurerm = {\n      source  = \"hashicorp/azurerm\"\n      version = \"~> 4.0\"\n    }\n  }\n}\n\nprovider \"azurerm\" {\n  features {}\n}\n\nresource \"azurerm_resource_group\" \"main\" {\n  name     = var.resource_group_name\n  location = var.location\n}\n\nresource \"azurerm_container_registry\" \"main\" {\n  name                = var.acr_name\n  resource_group_name = azurerm_resource_group.main.name\n  location            = azurerm_resource_group.main.location\n  sku                 = \"Basic\"\n  admin_enabled       = false\n}\n\nresource \"azurerm_kubernetes_cluster\" \"main\" {\n  name                = var.aks_name\n  location            = azurerm_resource_group.main.location\n  resource_group_name = azurerm_resource_group.main.name\n  dns_prefix          = var.aks_dns_prefix\n\n  default_node_pool {\n    name       = \"system\"\n    node_count = 2\n    vm_size    = \"Standard_B2s\"\n  }\n\n  identity {\n    type = \"SystemAssigned\"\n  }\n}\n\n# TODO: Assign AcrPull to the AKS kubelet identity after cluster identity is confirmed.\n# TODO: Add Jenkins VM, PostgreSQL, and monitoring modules when credentials and sizing are configured.\n# App runtime: Node.js, JavaScript"
+        },
+        {
+          "path": "infra/azure/variables.tf",
+          "status": "needs-input",
+          "content": "variable \"location\" { default = \"eastus\" }\nvariable \"resource_group_name\" { default = \"rg-pipelineforge-app\" }\nvariable \"acr_name\" { description = \"Must be globally unique.\" }\nvariable \"aks_name\" { default = \"aks-pipelineforge-app\" }\nvariable \"aks_dns_prefix\" { default = \"pipelineforge-app\" }"
+        }
+      ]
+    },
+    "aws": {
+      "provider": "aws",
+      "summary": "AWS landing plan for multi-service apps on ECR, EKS or ECS, RDS PostgreSQL, secrets, and CloudWatch.",
+      "resources": [
+        {
+          "name": "VPC",
+          "purpose": "Network boundary for EKS, Jenkins, and data services.",
+          "required": true
+        },
+        {
+          "name": "Elastic Container Registry",
+          "purpose": "Stores frontend and backend application images used by runtime services.",
+          "required": true
+        },
+        {
+          "name": "EKS or ECS",
+          "purpose": "Runs application containers with service discovery and ingress/load balancer routing.",
+          "required": true
+        },
+        {
+          "name": "Azure Pipelines AWS Service Connection",
+          "purpose": "Pushes images to ECR and deploys reviewed manifests through CI/CD.",
+          "required": true
+        },
+        {
+          "name": "IAM Roles",
+          "purpose": "Grants EKS, nodes, and CI controlled access to AWS services.",
+          "required": true
+        },
+        {
+          "name": "RDS PostgreSQL",
+          "purpose": "Managed database detected from app dependencies.",
+          "required": true
+        },
+        {
+          "name": "Secrets Manager",
+          "purpose": "Stores DATABASE_URL, TOKEN_SECRET, and runtime secrets outside source control.",
+          "required": true
+        },
+        {
+          "name": "CloudWatch Logs",
+          "purpose": "Collects application and cluster logs for feedback.",
+          "required": true
+        }
+      ],
+      "terraformFiles": [
+        {
+          "path": "infra/aws/main.tf",
+          "status": "needs-input",
+          "content": "terraform {\n  required_providers {\n    aws = {\n      source  = \"hashicorp/aws\"\n      version = \"~> 5.0\"\n    }\n  }\n}\n\nprovider \"aws\" {\n  region = var.region\n}\n\nresource \"aws_ecr_repository\" \"app\" {\n  name                 = var.ecr_repository_name\n  image_tag_mutability = \"MUTABLE\"\n}\n\n# TODO: Add VPC, EKS node groups, IAM roles, Jenkins EC2, RDS, and CloudWatch modules.\n# This file is intentionally staged until networking and account constraints are configured.\n# App runtime: Node.js, JavaScript"
+        },
+        {
+          "path": "infra/aws/variables.tf",
+          "status": "needs-input",
+          "content": "variable \"region\" { default = \"us-east-1\" }\nvariable \"ecr_repository_name\" { default = \"pipelineforge-app\" }\nvariable \"cluster_name\" { default = \"eks-pipelineforge-app\" }\nvariable \"jenkins_instance_type\" { default = \"t3.small\" }"
+        }
+      ]
+    }
+  },
+  "validations": [
+    {
+      "name": "Repository intake",
+      "status": "passed",
+      "message": "ZIP archive parsed successfully."
+    },
+    {
+      "name": "Package manifest",
+      "status": "passed",
+      "message": "package.json detected."
+    },
+    {
+      "name": "Service model",
+      "status": "passed",
+      "message": "2 deployable services detected: backend:8080, frontend:80."
+    },
+    {
+      "name": "Dockerfile",
+      "status": "passed",
+      "message": "Service Dockerfiles detected."
+    },
+    {
+      "name": "Ignore rules",
+      "status": "warning",
+      "message": "Add .dockerignore to reduce image size and secret leakage risk."
+    },
+    {
+      "name": "Build command",
+      "status": "passed",
+      "message": "No build script required for detected Dockerized services."
+    },
+    {
+      "name": "Start command",
+      "status": "passed",
+      "message": "Detected npm run start."
+    },
+    {
+      "name": "Test command",
+      "status": "warning",
+      "message": "No test script detected. CI will mark tests optional."
+    },
+    {
+      "name": "Runtime environment",
+      "status": "warning",
+      "message": "Requires deployment inputs or secrets for: PORT, APP_ENV, APP_VERSION, DATABASE_URL, DB_SSL, CORS_ORIGIN, LOG_LEVEL, TOKEN_SECRET."
+    },
+    {
+      "name": "Secret externalization",
+      "status": "warning",
+      "message": "TOKEN_SECRET must be supplied through a secret store before production deploy."
+    },
+    {
+      "name": "Secrets",
+      "status": "passed",
+      "message": "No committed .env file detected."
+    }
+  ],
+  "templates": [
+    {
+      "name": "service Dockerfiles",
+      "key": "multi-service-existing-dockerfiles",
+      "description": "Backend and frontend images are built from service folders."
+    },
+    {
+      "name": ".dockerignore",
+      "key": "per-service-secure-defaults",
+      "description": "Adds secure image context rules per service."
+    },
+    {
+      "name": "Jenkinsfile",
+      "key": "multi-image-modular",
+      "description": "Builds, scans, and pushes frontend and backend images separately."
+    },
+    {
+      "name": "azure-pipelines.yml",
+      "key": "multi-image-azure-pipelines",
+      "description": "Validates source and builds frontend/backend images as separate jobs."
+    },
+    {
+      "name": "docker-compose.yml",
+      "key": "frontend-backend-postgres-sandbox",
+      "description": "Runs frontend, backend, and PostgreSQL together for sandbox validation."
+    },
+    {
+      "name": "k8s/*.yaml",
+      "key": "multi-service-kubernetes",
+      "description": "Creates frontend, backend, secrets, services, ingress, and database connectivity."
+    }
+  ],
+  "generatedFiles": [
+    {
+      "path": "app/backend/Dockerfile",
+      "purpose": "ledgerly-api container image",
+      "status": "ready",
+      "content": "FROM node:22-alpine AS deps\nWORKDIR /app\nCOPY package*.json ./\nRUN npm install --omit=dev\n\nFROM node:22-alpine\nWORKDIR /app\nENV NODE_ENV=production\nCOPY --from=deps /app/node_modules ./node_modules\nCOPY package*.json ./\nCOPY src ./src\n\nEXPOSE 8080\n\nHEALTHCHECK --interval=30s --timeout=3s --start-period=15s --retries=3 \\\n  CMD wget -qO- http://127.0.0.1:8080/health >/dev/null || exit 1\n\nCMD [\"npm\", \"start\"]"
+    },
+    {
+      "path": "app/frontend/Dockerfile",
+      "purpose": "ledgerly-frontend container image",
+      "status": "ready",
+      "content": "FROM nginx:1.27-alpine\n\nCOPY ./nginx.conf /etc/nginx/conf.d/default.conf\nCOPY ./ /usr/share/nginx/html\n\nEXPOSE 80\n\nHEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \\\n  CMD wget -qO- http://127.0.0.1/ >/dev/null || exit 1"
+    },
+    {
+      "path": "app/backend/.dockerignore",
+      "purpose": "ledgerly-api secure image context",
+      "status": "ready",
+      "content": "node_modules\ndist\nbuild\n.git\n.env\n*.log\ncoverage\n.DS_Store"
+    },
+    {
+      "path": "app/frontend/.dockerignore",
+      "purpose": "ledgerly-frontend secure image context",
+      "status": "ready",
+      "content": "node_modules\ndist\nbuild\n.git\n.env\n*.log\ncoverage\n.DS_Store"
+    },
+    {
+      "path": "docker-compose.yml",
+      "purpose": "Multi-service sandbox with Postgres connectivity",
+      "status": "ready",
+      "content": "services:\n  postgres:\n    image: postgres:16-alpine\n    environment:\n      POSTGRES_DB: ledgerly\n      POSTGRES_USER: ledgerly\n      POSTGRES_PASSWORD: ledgerly\n    healthcheck:\n      test: [\"CMD-SHELL\", \"pg_isready -U ledgerly\"]\n      interval: 10s\n      timeout: 5s\n      retries: 5\n    volumes:\n      - postgres-data:/var/lib/postgresql/data\n  ledgerly-backend:\n    build: ./app/backend\n    environment:\n      PORT: 8080\n      APP_ENV: production\n      APP_VERSION: local\n      DATABASE_URL: postgres://ledgerly:ledgerly@postgres:5432/ledgerly\n      DB_SSL: \"false\"\n      CORS_ORIGIN: \"*\"\n      LOG_LEVEL: info\n      TOKEN_SECRET: REPLACE_WITH_TOKEN_SECRET\n    depends_on:\n      postgres:\n        condition: service_healthy\n    ports:\n      - \"8080:8080\"\n  ledgerly-frontend:\n    build: ./app/frontend\n    depends_on:\n      - ledgerly-backend\n    ports:\n      - \"80:80\"\n\nvolumes:\n  postgres-data:"
+    },
+    {
+      "path": "Jenkinsfile",
+      "purpose": "Multi-image modular CI/CD pipeline",
+      "status": "needs-input",
+      "content": "pipeline {\n    agent any\n    options { timestamps() }\n    environment {\n        REGISTRY = 'REPLACE_WITH_REGISTRY'\n    }\n    stages {\n        stage('Checkout') { steps { checkout scm } }\n        stage('Install Backend Dependencies') { steps { dir('app/backend') { sh 'npm install' } } }\n        stage('Test') { steps { echo 'No tests detected yet; add tests before enforcing this gate' } }\n        stage('Build Images') {\n            parallel {\n                stage('Backend Image') { steps { sh 'docker build -t $REGISTRY/sovereign-backend:${BUILD_NUMBER} app/backend' } }\n                stage('Frontend Image') { steps { sh 'docker build -t $REGISTRY/sovereign-frontend:${BUILD_NUMBER} app/frontend' } }\n            }\n        }\n        stage('Security Scan') { steps { echo 'Run Trivy on both images before push' } }\n        stage('Push Images') { steps { echo 'Push images after registry credentials are configured' } }\n        stage('Deploy') { when { expression { false } } steps { echo 'Deployment locked until Terraform and credentials are approved' } }\n    }\n}"
+    },
+    {
+      "path": "azure-pipelines.yml",
+      "purpose": "Azure Pipelines multi-image CI/CD workflow",
+      "status": "needs-input",
+      "content": "trigger:\n  branches:\n    include:\n      - main\n\npool:\n  vmImage: ubuntu-latest\n\nvariables:\n  containerRegistry: REPLACE_WITH_ACR_OR_ECR_SERVICE_CONNECTION\n  imageTag: $(Build.BuildId)\n\nstages:\n  - stage: Validate\n    jobs:\n      - job: Source\n        steps:\n          - checkout: self\n          - script: npm install\n            workingDirectory: app/backend\n            displayName: Install backend dependencies\n          - script: echo Add automated tests before enforcing production release\n            displayName: Test gate\n\n  - stage: BuildImages\n    dependsOn: Validate\n    jobs:\n      - job: BackendImage\n        steps:\n          - script: docker build -t $(containerRegistry)/sovereign-backend:$(imageTag) app/backend\n            displayName: Build backend image\n      - job: FrontendImage\n        steps:\n          - script: docker build -t $(containerRegistry)/sovereign-frontend:$(imageTag) app/frontend\n            displayName: Build frontend image\n\n  - stage: Deploy\n    dependsOn: BuildImages\n    condition: false\n    jobs:\n      - job: Locked\n        steps:\n          - script: echo Deployment locked until registry, database secrets, Terraform, and environment approvals are configured."
+    },
+    {
+      "path": "k8s/secret.yaml",
+      "purpose": "Runtime secret placeholders",
+      "status": "needs-input",
+      "content": "apiVersion: v1\nkind: Secret\nmetadata:\n  name: sovereign-runtime-secrets\ntype: Opaque\nstringData:\n  PORT: REPLACE_WITH_PORT\n  APP_ENV: REPLACE_WITH_APP_ENV\n  APP_VERSION: REPLACE_WITH_APP_VERSION\n  DATABASE_URL: REPLACE_WITH_DATABASE_URL\n  DB_SSL: REPLACE_WITH_DB_SSL\n  CORS_ORIGIN: REPLACE_WITH_CORS_ORIGIN\n  LOG_LEVEL: REPLACE_WITH_LOG_LEVEL\n  TOKEN_SECRET: REPLACE_WITH_TOKEN_SECRET"
+    },
+    {
+      "path": "k8s/deployment.yaml",
+      "purpose": "Frontend and backend Kubernetes deployments",
+      "status": "needs-input",
+      "content": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: ledgerly-backend\nspec:\n  replicas: 2\n  selector:\n    matchLabels:\n      app: ledgerly-backend\n  template:\n    metadata:\n      labels:\n        app: ledgerly-backend\n    spec:\n      containers:\n        - name: backend\n          image: REPLACE_WITH_REGISTRY/sovereign-backend:latest\n          ports:\n            - containerPort: 8080\n          envFrom:\n            - secretRef:\n                name: sovereign-runtime-secrets\n          readinessProbe:\n            httpGet:\n              path: /health\n              port: 8080\n            initialDelaySeconds: 10\n            periodSeconds: 10\n          livenessProbe:\n            httpGet:\n              path: /health\n              port: 8080\n            initialDelaySeconds: 30\n            periodSeconds: 20\n---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: ledgerly-frontend\nspec:\n  replicas: 2\n  selector:\n    matchLabels:\n      app: ledgerly-frontend\n  template:\n    metadata:\n      labels:\n        app: ledgerly-frontend\n    spec:\n      containers:\n        - name: frontend\n          image: REPLACE_WITH_REGISTRY/sovereign-frontend:latest\n          ports:\n            - containerPort: 80\n          readinessProbe:\n            httpGet:\n              path: /health\n              port: 80\n            initialDelaySeconds: 10\n            periodSeconds: 10\n          livenessProbe:\n            httpGet:\n              path: /health\n              port: 80\n            initialDelaySeconds: 30\n            periodSeconds: 20"
+    },
+    {
+      "path": "k8s/service.yaml",
+      "purpose": "Frontend and backend Kubernetes services",
+      "status": "ready",
+      "content": "apiVersion: v1\nkind: Service\nmetadata:\n  name: ledgerly-backend\nspec:\n  type: ClusterIP\n  selector:\n    app: ledgerly-backend\n  ports:\n    - name: http\n      protocol: TCP\n      port: 8080\n      targetPort: 8080\n---\napiVersion: v1\nkind: Service\nmetadata:\n  name: ledgerly-frontend\nspec:\n  type: ClusterIP\n  selector:\n    app: ledgerly-frontend\n  ports:\n    - name: http\n      protocol: TCP\n      port: 80\n      targetPort: 80"
+    },
+    {
+      "path": "k8s/ingress.yaml",
+      "purpose": "HTTPS ingress route for frontend and API traffic",
+      "status": "needs-input",
+      "content": "apiVersion: networking.k8s.io/v1\nkind: Ingress\nmetadata:\n  name: sovereign-web\nspec:\n  rules:\n    - host: REPLACE_WITH_DOMAIN\n      http:\n        paths:\n          - path: /api\n            pathType: Prefix\n            backend:\n              service:\n                name: ledgerly-backend\n                port:\n                  number: 8080\n          - path: /\n            pathType: Prefix\n            backend:\n              service:\n                name: ledgerly-frontend\n                port:\n                  number: 80"
+    },
+    {
+      "path": "aks/deployment-notes.md",
+      "purpose": "Azure AKS deployment handoff notes",
+      "status": "needs-input",
+      "content": "# Azure AKS Deployment Notes\n\nUse these files when the app is deployed on AKS with ACR images and a Kubernetes ingress controller.\n\n## Required Azure Values\n- Azure resource group: REPLACE_WITH_AZURE_RESOURCE_GROUP\n- AKS cluster name: REPLACE_WITH_AKS_CLUSTER_NAME\n- Kubernetes namespace: REPLACE_WITH_AKS_NAMESPACE\n- Ingress class: REPLACE_WITH_AKS_INGRESS_CLASS\n- ACR login server and immutable image tag\n- Public domain: REPLACE_WITH_DOMAIN\n- Secrets for DATABASE_URL, TOKEN_SECRET, and CORS_ORIGIN when required by the app\n\n## Service Map\n- ledgerly-api: ledgerly-backend on port 8080\n- ledgerly-frontend: ledgerly-frontend on port 80\n\n## Apply Order\n1. Push images to ACR.\n2. Confirm az aks get-credentials works for the cluster.\n3. Apply k8s/secret.yaml after replacing secret placeholders.\n4. Apply k8s/deployment.yaml and k8s/service.yaml.\n5. Apply k8s/ingress.yaml with the selected ingress class.\n6. Confirm public HTTPS routing."
+    },
+    {
+      "path": "eks/ingress-patch.yaml",
+      "purpose": "AWS EKS ALB ingress annotations",
+      "status": "needs-input",
+      "content": "apiVersion: networking.k8s.io/v1\nkind: Ingress\nmetadata:\n  name: sovereign-web\n  annotations:\n    kubernetes.io/ingress.class: REPLACE_WITH_EKS_INGRESS_CLASS\n    alb.ingress.kubernetes.io/scheme: internet-facing\n    alb.ingress.kubernetes.io/target-type: ip\n    alb.ingress.kubernetes.io/healthcheck-path: /\n    alb.ingress.kubernetes.io/listen-ports: '[{\"HTTPS\":443},{\"HTTP\":80}]'\n    alb.ingress.kubernetes.io/ssl-redirect: '443'\nspec:\n  ingressClassName: REPLACE_WITH_EKS_INGRESS_CLASS\n  rules:\n    - host: REPLACE_WITH_DOMAIN\n      http:\n        paths:\n          - path: /\n            pathType: Prefix\n            backend:\n              service:\n                name: ledgerly-frontend\n                port:\n                  number: 80"
+    },
+    {
+      "path": "eks/deployment-notes.md",
+      "purpose": "AWS EKS deployment handoff notes",
+      "status": "needs-input",
+      "content": "# AWS EKS Deployment Notes\n\nUse these files when the app is deployed on Amazon EKS with ECR images and the AWS Load Balancer Controller.\n\n## Required AWS Values\n- AWS region: REPLACE_WITH_AWS_REGION\n- EKS cluster name: REPLACE_WITH_EKS_CLUSTER_NAME\n- Kubernetes namespace: REPLACE_WITH_EKS_NAMESPACE\n- Ingress class: REPLACE_WITH_EKS_INGRESS_CLASS\n- ECR registry and immutable image tag\n- Public domain: REPLACE_WITH_DOMAIN\n- Secrets for DATABASE_URL, TOKEN_SECRET, and CORS_ORIGIN when required by the app\n\n## Service Map\n- ledgerly-api: ledgerly-backend on port 8080\n- ledgerly-frontend: ledgerly-frontend on port 80\n\n## Apply Order\n1. Push images to ECR.\n2. Confirm aws eks update-kubeconfig works for the cluster.\n3. Apply k8s/secret.yaml after replacing secret placeholders.\n4. Apply k8s/deployment.yaml and k8s/service.yaml.\n5. Apply eks/ingress-patch.yaml or merge its annotations into k8s/ingress.yaml.\n6. Confirm ALB target health and public HTTPS routing."
+    },
+    {
+      "path": "ecs/task-definition.json",
+      "purpose": "AWS ECS Fargate task definition for frontend and backend containers",
+      "status": "needs-input",
+      "content": "{\n  \"family\": \"sovereign-code\",\n  \"networkMode\": \"awsvpc\",\n  \"requiresCompatibilities\": [\n    \"FARGATE\"\n  ],\n  \"cpu\": \"512\",\n  \"memory\": \"1024\",\n  \"executionRoleArn\": \"REPLACE_WITH_ECS_TASK_EXECUTION_ROLE_ARN\",\n  \"taskRoleArn\": \"REPLACE_WITH_ECS_TASK_ROLE_ARN\",\n  \"containerDefinitions\": [\n    {\n      \"name\": \"ledgerly-backend\",\n      \"image\": \"REPLACE_WITH_REGISTRY/sovereign-backend:REPLACE_WITH_IMAGE_TAG\",\n      \"essential\": true,\n      \"portMappings\": [\n        {\n          \"containerPort\": 8080,\n          \"protocol\": \"tcp\"\n        }\n      ],\n      \"environment\": [\n        {\n          \"name\": \"PORT\",\n          \"value\": \"8080\"\n        },\n        {\n          \"name\": \"APP_ENV\",\n          \"value\": \"production\"\n        },\n        {\n          \"name\": \"APP_VERSION\",\n          \"value\": \"REPLACE_WITH_IMAGE_TAG\"\n        },\n        {\n          \"name\": \"DB_SSL\",\n          \"value\": \"true\"\n        },\n        {\n          \"name\": \"LOG_LEVEL\",\n          \"value\": \"info\"\n        }\n      ],\n      \"secrets\": [\n        {\n          \"name\": \"DATABASE_URL\",\n          \"valueFrom\": \"REPLACE_WITH_DATABASE_URL_SECRET_ARN\"\n        },\n        {\n          \"name\": \"TOKEN_SECRET\",\n          \"valueFrom\": \"REPLACE_WITH_TOKEN_SECRET_ARN\"\n        },\n        {\n          \"name\": \"CORS_ORIGIN\",\n          \"valueFrom\": \"REPLACE_WITH_CORS_ORIGIN_SECRET_ARN\"\n        }\n      ],\n      \"logConfiguration\": {\n        \"logDriver\": \"awslogs\",\n        \"options\": {\n          \"awslogs-group\": \"/ecs/sovereign-code/backend\",\n          \"awslogs-region\": \"REPLACE_WITH_AWS_REGION\",\n          \"awslogs-stream-prefix\": \"ecs\"\n        }\n      }\n    },\n    {\n      \"name\": \"ledgerly-frontend\",\n      \"image\": \"REPLACE_WITH_REGISTRY/sovereign-frontend:REPLACE_WITH_IMAGE_TAG\",\n      \"essential\": true,\n      \"portMappings\": [\n        {\n          \"containerPort\": 80,\n          \"protocol\": \"tcp\"\n        }\n      ],\n      \"dependsOn\": [\n        {\n          \"containerName\": \"ledgerly-backend\",\n          \"condition\": \"START\"\n        }\n      ],\n      \"logConfiguration\": {\n        \"logDriver\": \"awslogs\",\n        \"options\": {\n          \"awslogs-group\": \"/ecs/sovereign-code/frontend\",\n          \"awslogs-region\": \"REPLACE_WITH_AWS_REGION\",\n          \"awslogs-stream-prefix\": \"ecs\"\n        }\n      }\n    }\n  ]\n}"
+    },
+    {
+      "path": "ecs/service.json",
+      "purpose": "AWS ECS Fargate service definition with load balancer placeholders",
+      "status": "needs-input",
+      "content": "{\n  \"serviceName\": \"sovereign-code\",\n  \"cluster\": \"REPLACE_WITH_ECS_CLUSTER_ARN\",\n  \"taskDefinition\": \"REPLACE_WITH_TASK_DEFINITION\",\n  \"desiredCount\": 2,\n  \"launchType\": \"FARGATE\",\n  \"platformVersion\": \"LATEST\",\n  \"networkConfiguration\": {\n    \"awsvpcConfiguration\": {\n      \"subnets\": [\n        \"REPLACE_WITH_PRIVATE_SUBNET_ID_1\",\n        \"REPLACE_WITH_PRIVATE_SUBNET_ID_2\"\n      ],\n      \"securityGroups\": [\n        \"REPLACE_WITH_ECS_SERVICE_SECURITY_GROUP_ID\"\n      ],\n      \"assignPublicIp\": \"DISABLED\"\n    }\n  },\n  \"loadBalancers\": [\n    {\n      \"targetGroupArn\": \"REPLACE_WITH_FRONTEND_TARGET_GROUP_ARN\",\n      \"containerName\": \"ledgerly-frontend\",\n      \"containerPort\": 80\n    }\n  ],\n  \"deploymentConfiguration\": {\n    \"deploymentCircuitBreaker\": {\n      \"enable\": true,\n      \"rollback\": true\n    },\n    \"maximumPercent\": 200,\n    \"minimumHealthyPercent\": 100\n  }\n}"
+    },
+    {
+      "path": "ecs/deployment-notes.md",
+      "purpose": "AWS ECS Fargate deployment handoff notes",
+      "status": "needs-input",
+      "content": "# AWS ECS Fargate Deployment Notes\n\nUse these ECS files when Sovereign Code is deployed on ECS Fargate instead of Kubernetes.\n\n## Required AWS Values\n- AWS region\n- ECR backend image URL and immutable tag\n- ECR frontend image URL and immutable tag\n- ECS cluster ARN\n- ECS task execution role ARN\n- ECS task role ARN\n- Private subnet IDs\n- ECS service security group ID\n- ALB target group ARN\n- Secrets Manager ARNs for DATABASE_URL, TOKEN_SECRET, and CORS_ORIGIN\n\n## Service Map\n- Backend: ledgerly-backend on 8080\n- Frontend: ledgerly-frontend on 80\n\n## Apply Order\n1. Push backend and frontend images to ECR.\n2. Replace placeholders in ecs/task-definition.json.\n3. Register the task definition.\n4. Replace placeholders in ecs/service.json.\n5. Create or update the ECS service.\n6. Confirm ALB target health.\n7. Test the public domain and backend health route."
+    }
+  ],
+  "pipeline": [
+    {
+      "name": "Checkout",
+      "enabled": true,
+      "detail": "Pull repository source."
+    },
+    {
+      "name": "Detect Services",
+      "enabled": true,
+      "detail": "2 services: backend, frontend."
+    },
+    {
+      "name": "Install Backend Dependencies",
+      "enabled": true,
+      "detail": "Run backend package install before tests."
+    },
+    {
+      "name": "Run Tests",
+      "enabled": false,
+      "detail": "Optional until a test script exists."
+    },
+    {
+      "name": "Build Backend Image",
+      "enabled": true,
+      "detail": "Build backend image from app/backend."
+    },
+    {
+      "name": "Build Frontend Image",
+      "enabled": true,
+      "detail": "Build frontend image from app/frontend."
+    },
+    {
+      "name": "Security Scan",
+      "enabled": true,
+      "detail": "Scan both images before registry push."
+    },
+    {
+      "name": "Push Images",
+      "enabled": false,
+      "detail": "Locked until registry service connection is configured."
+    },
+    {
+      "name": "Deploy",
+      "enabled": false,
+      "detail": "Disabled until cloud target, database, secrets, and Terraform are configured."
+    }
+  ],
+  "score": 89,
+  "scoreBreakdown": {
+    "score": 89,
+    "maxScore": 100,
+    "missingPoints": 11,
+    "categories": [
+      {
+        "name": "Validation rules",
+        "points": 48,
+        "maxPoints": 48,
+        "description": "Repository quality checks from manifests, commands, Docker readiness, tests, and secret hygiene."
+      },
+      {
+        "name": "Stack detection",
+        "points": 19,
+        "maxPoints": 22,
+        "description": "Runtime and framework confidence from detected source and manifests."
+      },
+      {
+        "name": "Template coverage",
+        "points": 10,
+        "maxPoints": 10,
+        "description": "Golden deployment, CI/CD, and Kubernetes template availability."
+      },
+      {
+        "name": "Baseline",
+        "points": 20,
+        "maxPoints": 20,
+        "description": "Base readiness awarded after the repository can be analyzed."
+      }
+    ],
+    "reasons": [
+      "4 warning rules still need attention: Ignore rules, Test command, Runtime environment, Secret externalization."
+    ],
+    "pathTo100": [
+      {
+        "title": "Add test command",
+        "detail": "Add a test script so CI can fail safely before image build and deployment.",
+        "points": 5
+      },
+      {
+        "title": "Add .dockerignore",
+        "detail": "Exclude dependencies, .env files, logs, and build output from image context.",
+        "points": 5
+      }
+    ]
+  },
+  "promotionDecision": {
+    "status": "blocked",
+    "title": "Blocked before production",
+    "message": "Map required runtime secrets and deployment inputs before enabling cloud deployment gates.",
+    "gates": [
+      {
+        "name": "Blocking rules",
+        "status": "blocked",
+        "message": "2 deployment input gates still blocked."
+      },
+      {
+        "name": "Readiness threshold",
+        "status": "passed",
+        "message": "89/100 readiness score. Minimum release review threshold is 85."
+      },
+      {
+        "name": "Warning review",
+        "status": "warning",
+        "message": "4 warning rules require review."
+      }
+    ]
+  },
+  "generatedAt": "2026-06-01T12:57:47.301Z",
+  "savedAt": "2026-06-01T12:57:47.303Z"
+}

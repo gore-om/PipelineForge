@@ -10,6 +10,7 @@ import path from "node:path";
 const app = express();
 const dataDir = process.env.PIPELINEFORGE_DATA_DIR || path.join(process.cwd(), ".pipelineforge-data");
 const analysisDir = path.join(dataDir, "analyses");
+const persistAnalysis = process.env.PIPELINEFORGE_PERSIST_ANALYSIS !== "false";
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
@@ -26,6 +27,10 @@ app.get("/api/health", (_req, res) => {
 
 app.get("/api/projects", async (_req, res) => {
   res.json(await listAnalysisRecords());
+});
+
+app.get("/api/privacy/status", (_req, res) => {
+  res.json(buildPrivacyStatus());
 });
 
 app.post("/api/analyze/github", (req, res) => {
@@ -153,11 +158,32 @@ app.get("/api/runtime/toolchain", async (_req, res) => {
 });
 
 async function persistAnalysisRecord(analysis) {
+  if (!persistAnalysis) return;
   await mkdir(analysisDir, { recursive: true });
   const savedAt = new Date().toISOString();
   const record = { ...analysis, savedAt };
   const fileName = `${safeArchiveName(analysis.repoName)}-${Date.now()}.json`;
   await writeFile(path.join(analysisDir, fileName), JSON.stringify(record, null, 2));
+}
+
+function buildPrivacyStatus() {
+  return {
+    rawRepositoryStorage: "disabled",
+    analysisPersistence: persistAnalysis ? "enabled" : "disabled",
+    dataDir: persistAnalysis ? dataDir : "disabled",
+    uploadHandling: "Uploaded ZIP files are read from memory and not written to disk by the intake endpoint",
+    secretHandling: "Release inputs are redacted in reports when keys look secret, token, password, or database related",
+    retention: {
+      analysisRecords: persistAnalysis ? "Analysis metadata is retained in the configured PipelineForge data directory" : "Analysis metadata persistence is disabled",
+      rawUploads: "Raw uploaded repositories are not persisted"
+    },
+    controls: [
+      "No raw repo persistence",
+      "In-memory ZIP intake",
+      "Redacted release reports",
+      persistAnalysis ? "Analysis metadata history enabled" : "Analysis metadata history disabled"
+    ]
+  };
 }
 
 async function listAnalysisRecords() {

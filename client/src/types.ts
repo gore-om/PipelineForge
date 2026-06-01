@@ -178,3 +178,16 @@ export type AutoFixResult = {
   }>;
   fixedAt: string;
 };
+
+export type PrivacyStatus = {
+  rawRepositoryStorage: "disabled" | "enabled";
+  analysisPersistence: "enabled" | "disabled";
+  dataDir: string;
+  uploadHandling: string;
+  secretHandling: string;
+  retention: {
+    analysisRecords: string;
+    rawUploads: string;
+  };
+  controls: string[];
+};

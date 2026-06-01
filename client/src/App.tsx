@@ -21,7 +21,7 @@ import {
   XCircle
 } from "lucide-react";
 import { type CSSProperties, type FormEvent, type ReactNode, useEffect, useState } from "react";
-import type { Analysis, AutoFixResult, RuleStatus, RuntimeToolchain, SandboxResult, SandboxStatus } from "./types";
+import type { Analysis, AutoFixResult, PrivacyStatus, RuleStatus, RuntimeToolchain, SandboxResult, SandboxStatus } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 type WorkflowStep = "source" | "analyze" | "validate" | "generate" | "pipeline";
@@ -103,6 +103,7 @@ function App() {
   const [securityResult, setSecurityResult] = useState<SandboxResult | null>(null);
   const [autoFixResult, setAutoFixResult] = useState<AutoFixResult | null>(null);
   const [runtimeToolchain, setRuntimeToolchain] = useState<RuntimeToolchain | null>(null);
+  const [privacyStatus, setPrivacyStatus] = useState<PrivacyStatus | null>(null);
   const [isSandboxLoading, setIsSandboxLoading] = useState(false);
   const [isRuntimeLoading, setIsRuntimeLoading] = useState(false);
   const [isSecurityLoading, setIsSecurityLoading] = useState(false);
@@ -132,11 +133,21 @@ function App() {
     }
 
     void loadProjectHistory();
+    void loadPrivacyStatus();
 
     return () => {
       cancelled = true;
     };
   }, []);
+
+  async function loadPrivacyStatus() {
+    try {
+      const response = await fetch(`${API_BASE}/api/privacy/status`);
+      setPrivacyStatus(await parseResponse(response) as PrivacyStatus);
+    } catch {
+      setPrivacyStatus(null);
+    }
+  }
 
   async function analyzeGithub(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -268,6 +279,7 @@ function App() {
 
     setIsSecurityLoading(true);
     setError(null);
+    setAutoFixResult(null);
 
     try {
       const response = await fetch(`${API_BASE}/api/security/gates`, {
@@ -296,7 +308,7 @@ function App() {
       const response = await fetch(`${API_BASE}/api/autofix/preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ files: currentGeneratedFiles })
+        body: JSON.stringify({ files: currentTargetGeneratedFiles })
       });
       setAutoFixResult(await parseResponse(response));
     } catch (requestError) {
@@ -485,7 +497,7 @@ function App() {
                 <span><CheckCircle2 size={17} /> Jenkins stage readiness</span>
               </div>
               <RecentAnalyses analyses={recentAnalyses} onReopen={reopenAnalysis} />
-              <RepositoryTrustPanel />
+              <RepositoryTrustPanel privacyStatus={privacyStatus} />
             </div>
           </section>
         ) : null}
@@ -674,15 +686,19 @@ function RecentAnalyses({ analyses, onReopen }: { analyses: Analysis[]; onReopen
   );
 }
 
-function RepositoryTrustPanel() {
+function RepositoryTrustPanel({ privacyStatus }: { privacyStatus: PrivacyStatus | null }) {
   return (
     <div className="trust-panel">
       <strong>Repository privacy posture</strong>
-      <span>Uploaded archives are processed in temporary workspaces. PipelineForge stores analysis metadata and generated outputs, not raw source code, and release reports redact secret-like values.</span>
+      <span>
+        {privacyStatus
+          ? `${privacyStatus.uploadHandling}. ${privacyStatus.secretHandling}. Analysis persistence is ${privacyStatus.analysisPersistence}.`
+          : "Uploaded archives are processed in temporary workspaces. PipelineForge stores analysis metadata and generated outputs, not raw source code, and release reports redact secret-like values."}
+      </span>
       <div>
-        <span>Temporary processing</span>
-        <span>Redacted reports</span>
-        <span>No raw repo persistence</span>
+        {(privacyStatus?.controls ?? ["Temporary processing", "Redacted reports", "No raw repo persistence"]).map((control) => (
+          <span key={control}>{control}</span>
+        ))}
       </div>
     </div>
   );
@@ -1656,6 +1672,11 @@ function SecurityGatePanel({
   result: SandboxResult | null;
 }) {
   const canAutoFix = Boolean(result?.checks.some((check) => check.status === "warning" || check.status === "failed"));
+  const [showAutoFixResult, setShowAutoFixResult] = useState(false);
+
+  useEffect(() => {
+    if (autoFixResult) setShowAutoFixResult(true);
+  }, [autoFixResult]);
 
   return (
     <div className="validation-action-card">
@@ -1688,11 +1709,16 @@ function SecurityGatePanel({
               <strong>{autoFixResult.status === "ready" ? "Fixes ready" : "No safe fixes needed"}</strong>
               <span>{autoFixResult.changes.length} controlled change{autoFixResult.changes.length === 1 ? "" : "s"} prepared.</span>
             </div>
-            <button className="primary-button" type="button" disabled={!autoFixResult.changes.length} onClick={onApplyAutoFixes}>
-              Apply fixes
-            </button>
+            <div className="toolchain-actions">
+              <button className="ghost-button" type="button" onClick={() => setShowAutoFixResult((value) => !value)}>
+                {showAutoFixResult ? "Hide preview" : "Show preview"}
+              </button>
+              <button className="primary-button" type="button" disabled={!autoFixResult.changes.length} onClick={onApplyAutoFixes}>
+                Apply fixes
+              </button>
+            </div>
           </div>
-          <div className="template-list">
+          {showAutoFixResult ? <div className="template-list">
             {(autoFixResult.changes.length ? autoFixResult.changes : [{ path: "generated files", title: "No changes", detail: "Generated configs already satisfy current safe auto-fix rules." }]).map((change) => (
               <div key={`${change.path}-${change.title}`}>
                 <strong>{change.title}</strong>
@@ -1700,7 +1726,7 @@ function SecurityGatePanel({
                 <span>{change.detail}</span>
               </div>
             ))}
-          </div>
+          </div> : null}
         </div>
       ) : null}
     </div>
