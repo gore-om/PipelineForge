@@ -1449,6 +1449,50 @@ code {
   color: #9fb3cd;
 }
 
+.verification-callout {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid rgba(104, 168, 255, 0.24);
+  border-radius: 8px;
+  background: rgba(35, 109, 255, 0.12);
+}
+
+.verification-callout span {
+  color: #b8c7dc;
+}
+
+.release-evidence-matrix {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.release-evidence-matrix > div {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 12px;
+  border: 1px solid rgba(126, 176, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(4, 9, 19, 0.48);
+}
+
+.release-evidence-matrix > div:last-child {
+  grid-column: 1 / -1;
+}
+
+.release-evidence-matrix strong,
+.release-evidence-matrix span {
+  display: block;
+}
+
+.release-evidence-matrix span {
+  margin-top: 4px;
+  color: #9fb3cd;
+}
+
 .sandbox-actions span,
 .sandbox-empty span,
 .next-actions span,

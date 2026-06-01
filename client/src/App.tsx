@@ -102,6 +102,7 @@ function App() {
   const [runtimeResult, setRuntimeResult] = useState<SandboxResult | null>(null);
   const [securityResult, setSecurityResult] = useState<SandboxResult | null>(null);
   const [autoFixResult, setAutoFixResult] = useState<AutoFixResult | null>(null);
+  const [needsSecurityRecheck, setNeedsSecurityRecheck] = useState(false);
   const [runtimeToolchain, setRuntimeToolchain] = useState<RuntimeToolchain | null>(null);
   const [privacyStatus, setPrivacyStatus] = useState<PrivacyStatus | null>(null);
   const [isSandboxLoading, setIsSandboxLoading] = useState(false);
@@ -210,6 +211,7 @@ function App() {
       setRuntimeResult(null);
       setSecurityResult(null);
       setAutoFixResult(null);
+      setNeedsSecurityRecheck(false);
       setActiveStep("analyze");
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Analysis failed.");
@@ -226,6 +228,7 @@ function App() {
     setRuntimeResult(null);
     setSecurityResult(null);
     setAutoFixResult(null);
+    setNeedsSecurityRecheck(false);
     setActiveStep("analyze");
   }
 
@@ -297,6 +300,7 @@ function App() {
     setIsSecurityLoading(true);
     setError(null);
     setAutoFixResult(null);
+    setNeedsSecurityRecheck(false);
 
     try {
       const response = await fetch(`${API_BASE}/api/security/gates`, {
@@ -342,7 +346,7 @@ function App() {
     setAutoFixResult(null);
     setSandboxResult(null);
     setRuntimeResult(null);
-    setSecurityResult(null);
+    setNeedsSecurityRecheck(true);
   }
 
   function changeDeploymentTarget(target: DeploymentTarget) {
@@ -350,6 +354,8 @@ function App() {
     setSandboxResult(null);
     setRuntimeResult(null);
     setSecurityResult(null);
+    setAutoFixResult(null);
+    setNeedsSecurityRecheck(false);
     if (target === "aks") setGeneratedFileFilter("aks");
     if (target === "eks") setGeneratedFileFilter("eks");
     if (target === "ecs") setGeneratedFileFilter("ecs");
@@ -532,6 +538,7 @@ function App() {
             isRuntimeLoading={isRuntimeLoading}
             isSecurityLoading={isSecurityLoading}
             isToolchainLoading={isToolchainLoading}
+            needsSecurityRecheck={needsSecurityRecheck}
             onApplyAutoFixes={applyAutoFixes}
             onDeploymentInputsChange={setDeploymentInputs}
             onDeploymentTargetChange={changeDeploymentTarget}
@@ -558,7 +565,16 @@ function App() {
             onFilterChange={setGeneratedFileFilter}
           />
         ) : null}
-        {activeStep === "pipeline" ? <PipelineView analysis={analysis} ciProvider={ciProvider} onCiProviderChange={setCiProvider} /> : null}
+        {activeStep === "pipeline" ? (
+          <PipelineView
+            analysis={analysis}
+            ciProvider={ciProvider}
+            onCiProviderChange={setCiProvider}
+            runtimeResult={runtimeResult}
+            sandboxResult={sandboxResult}
+            securityResult={securityResult}
+          />
+        ) : null}
       </section>
     </main>
   );
@@ -1398,6 +1414,7 @@ function ValidationView({
   isSandboxLoading,
   isSecurityLoading,
   isToolchainLoading,
+  needsSecurityRecheck,
   onApplyAutoFixes,
   onDeploymentInputsChange,
   onDeploymentTargetChange,
@@ -1421,6 +1438,7 @@ function ValidationView({
   isSandboxLoading: boolean;
   isSecurityLoading: boolean;
   isToolchainLoading: boolean;
+  needsSecurityRecheck: boolean;
   onApplyAutoFixes: () => void;
   onDeploymentInputsChange: (inputs: DeploymentInputs) => void;
   onDeploymentTargetChange: (target: DeploymentTarget) => void;
@@ -1518,6 +1536,7 @@ function ValidationView({
               isAutoFixLoading={isAutoFixLoading}
               isLoading={isSecurityLoading}
               missing={securityMissing}
+              needsRecheck={needsSecurityRecheck}
               onApplyAutoFixes={onApplyAutoFixes}
               onPreviewAutoFixes={onPreviewAutoFixes}
               onRun={onRunSecurity}
@@ -1686,6 +1705,7 @@ function SecurityGatePanel({
   isAutoFixLoading,
   isLoading,
   missing,
+  needsRecheck,
   onApplyAutoFixes,
   onPreviewAutoFixes,
   onRun,
@@ -1696,13 +1716,18 @@ function SecurityGatePanel({
   isAutoFixLoading: boolean;
   isLoading: boolean;
   missing: string[];
+  needsRecheck: boolean;
   onApplyAutoFixes: () => void;
   onPreviewAutoFixes: () => void;
   onRun: () => void;
   result: SandboxResult | null;
 }) {
-  const canAutoFix = Boolean(result?.checks.some((check) => check.status === "warning" || check.status === "failed"));
+  const canAutoFix = Boolean(result);
   const [showAutoFixResult, setShowAutoFixResult] = useState(false);
+
+  useEffect(() => {
+    setShowAutoFixResult(false);
+  }, [autoFixResult?.fixedAt]);
 
   return (
     <div className="validation-action-card">
@@ -1718,6 +1743,12 @@ function SecurityGatePanel({
       </div>
       <ActionRequirements title="Needed for security gates" missing={missing} readyText="No deployment values required. Generated target files can be scanned now." />
       {result ? <CollapsibleResultView result={result} title="Security evidence" /> : null}
+      {needsRecheck ? (
+        <div className="verification-callout">
+          <strong>Re-verification required</strong>
+          <span>Safe fixes were applied to generated files. Run security gates again before release handoff.</span>
+        </div>
+      ) : null}
       <div className="autofix-panel">
         <div>
           <strong>Safe auto-fix</strong>
@@ -1924,11 +1955,17 @@ function gateIcon(status: "passed" | "warning" | "blocked") {
 function PipelineView({
   analysis,
   ciProvider,
-  onCiProviderChange
+  onCiProviderChange,
+  runtimeResult,
+  sandboxResult,
+  securityResult
 }: {
   analysis: Analysis | null;
   ciProvider: "azure-pipelines" | "jenkins";
   onCiProviderChange: (provider: "azure-pipelines" | "jenkins") => void;
+  runtimeResult: SandboxResult | null;
+  sandboxResult: SandboxResult | null;
+  securityResult: SandboxResult | null;
 }) {
   const pipelineFile = analysis?.generatedFiles.find((file) => file.path === (ciProvider === "azure-pipelines" ? "azure-pipelines.yml" : "Jenkinsfile"));
 
@@ -1979,12 +2016,76 @@ function PipelineView({
             <Metric icon={<Cloud size={20} />} label="Cloud apply" value="Locked" />
             <Metric icon={<LockKeyhole size={20} />} label="Drift detection" value="Later" />
           </div>
+          <ReleaseEvidenceMatrix
+            analysis={analysis}
+            pipelineFile={pipelineFile}
+            runtimeResult={runtimeResult}
+            sandboxResult={sandboxResult}
+            securityResult={securityResult}
+          />
           <PromotionRunbook analysis={analysis} ciProvider={ciProvider} />
         </FocusedPanel>
         <FocusedPanel kicker="Release package" title="Pipeline handoff checklist">
           <PipelineHandoffChecklist analysis={analysis} pipelineFile={pipelineFile} />
         </FocusedPanel>
       </div>
+    </div>
+  );
+}
+
+function ReleaseEvidenceMatrix({
+  analysis,
+  pipelineFile,
+  runtimeResult,
+  sandboxResult,
+  securityResult
+}: {
+  analysis: Analysis | null;
+  pipelineFile: GeneratedFile | undefined;
+  runtimeResult: SandboxResult | null;
+  sandboxResult: SandboxResult | null;
+  securityResult: SandboxResult | null;
+}) {
+  const unresolvedFiles = analysis?.generatedFiles.filter((file) => file.status !== "ready") ?? [];
+  const evidence = [
+    {
+      name: "Generated configs",
+      status: unresolvedFiles.length ? "warning" as RuleStatus : "passed" as RuleStatus,
+      detail: unresolvedFiles.length ? `${unresolvedFiles.length} files still need deployment values.` : "Generated files are ready for handoff."
+    },
+    {
+      name: "Sandbox checks",
+      status: sandboxResult?.status === "ready" ? "passed" as RuleStatus : sandboxResult?.status === "blocked" ? "failed" as RuleStatus : "warning" as RuleStatus,
+      detail: sandboxResult ? `${sandboxResult.summary.passed} passed, ${sandboxResult.summary.failed} failed.` : "Run sandbox checks before release."
+    },
+    {
+      name: "Runtime dry-runs",
+      status: runtimeResult?.status === "ready" ? "passed" as RuleStatus : runtimeResult?.status === "blocked" ? "failed" as RuleStatus : "warning" as RuleStatus,
+      detail: runtimeResult ? `${runtimeResult.summary.passed} passed, ${runtimeResult.summary.skipped} skipped.` : "Runtime evidence is pending."
+    },
+    {
+      name: "Security gates",
+      status: securityResult?.status === "ready" ? "passed" as RuleStatus : securityResult?.status === "blocked" ? "failed" as RuleStatus : "warning" as RuleStatus,
+      detail: securityResult ? `${securityResult.summary.warning} warnings, ${securityResult.summary.failed} failed.` : "Security evidence is pending."
+    },
+    {
+      name: "Pipeline file",
+      status: pipelineFile && pipelineFile.status === "ready" ? "passed" as RuleStatus : "warning" as RuleStatus,
+      detail: pipelineFile ? `${pipelineFile.path} is selected.` : "Select or generate a pipeline file."
+    }
+  ];
+
+  return (
+    <div className="release-evidence-matrix">
+      {evidence.map((item) => (
+        <div key={item.name}>
+          {statusIcon(item.status)}
+          <div>
+            <strong>{item.name}</strong>
+            <span>{item.detail}</span>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
