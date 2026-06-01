@@ -810,6 +810,14 @@ code {
   align-content: start;
 }
 
+.preflight-panel {
+  align-self: start;
+}
+
+.preflight-panel .rule-list {
+  margin-bottom: 14px;
+}
+
 .evidence-bundle {
   display: grid;
   gap: 12px;
@@ -817,6 +825,10 @@ code {
   border: 1px solid rgba(126, 176, 255, 0.14);
   border-radius: 8px;
   background: rgba(4, 9, 19, 0.48);
+}
+
+.evidence-bundle.compact-evidence {
+  background: rgba(5, 13, 29, 0.56);
 }
 
 .evidence-bundle > div:first-child {
@@ -832,6 +844,10 @@ code {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+}
+
+.compact-evidence .evidence-list {
+  grid-template-columns: 1fr;
 }
 
 .evidence-list > div {

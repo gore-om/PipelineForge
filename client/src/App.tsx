@@ -1475,7 +1475,7 @@ function ValidationView({
       <FocusedPanel kicker="Validation engine" title="Rule outcomes">
         <RuleList analysis={analysis} />
       </FocusedPanel>
-      <FocusedPanel kicker="Preflight gates" title={analysis.preflight.status === "ready" ? "Ready for sandbox" : "Blocked before execution"}>
+      <FocusedPanel kicker="Preflight gates" title={analysis.preflight.status === "ready" ? "Ready for sandbox" : "Blocked before execution"} className="preflight-panel">
         <div className="rule-list">
           {analysis.preflight.gates.map((gate) => (
             <div className="rule-row" key={gate.name}>
@@ -1487,6 +1487,13 @@ function ValidationView({
             </div>
           ))}
         </div>
+        <ValidationEvidenceBundle
+          className="compact-evidence"
+          generatedFiles={targetFiles}
+          runtimeResult={runtimeResult}
+          sandboxResult={sandboxResult}
+          securityResult={securityResult}
+        />
       </FocusedPanel>
       <FocusedPanel kicker="Sandbox validation" title="Generated config execution check" className="wide-panel">
         <div className="validation-command-grid">
@@ -1543,7 +1550,6 @@ function ValidationView({
               onRun={onRunSecurity}
               result={securityResult}
             />
-            <ValidationEvidenceBundle generatedFiles={targetFiles} runtimeResult={runtimeResult} sandboxResult={sandboxResult} securityResult={securityResult} />
           </div>
         </div>
       </FocusedPanel>
@@ -1656,11 +1662,13 @@ function ActionRequirements({
 }
 
 function ValidationEvidenceBundle({
+  className = "",
   generatedFiles,
   runtimeResult,
   sandboxResult,
   securityResult
 }: {
+  className?: string;
   generatedFiles: GeneratedFile[];
   runtimeResult: SandboxResult | null;
   sandboxResult: SandboxResult | null;
@@ -1675,7 +1683,7 @@ function ValidationEvidenceBundle({
   ];
 
   return (
-    <div className="evidence-bundle">
+    <div className={`evidence-bundle ${className}`}>
       <div>
         <strong>Validation evidence bundle</strong>
         <span>Release proof collected before cloud deployment unlocks.</span>
