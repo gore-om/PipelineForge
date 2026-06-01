@@ -842,6 +842,8 @@ function runSandboxValidation({ files, deploymentInputs, repoName }) {
     validateKubernetesDeployment(fileMap, deploymentInputs),
     validateKubernetesService(fileMap),
     validateKubernetesIngress(fileMap, deploymentInputs),
+    validateEcsTaskDefinition(fileMap),
+    validateEcsService(fileMap),
     validateAzurePipeline(fileMap),
     validateJenkinsPipeline(fileMap)
   ];
@@ -868,12 +870,14 @@ function sandboxCheck(name, status, message, command) {
 function materializeDeploymentInputs(files, deploymentInputs = {}) {
   const registry = String(deploymentInputs.imageRegistry ?? "").trim().replace(/\/$/, "");
   const domain = String(deploymentInputs.domain ?? "").trim();
+  const imageTag = String(deploymentInputs.imageTag ?? "").trim() || "latest";
   return files.map((file) => {
     let content = file.content ?? "";
     if (registry) {
       content = content
         .replaceAll("REPLACE_WITH_REGISTRY", registry)
-        .replaceAll("REPLACE_WITH_ACR_OR_ECR_SERVICE_CONNECTION", registry);
+        .replaceAll("REPLACE_WITH_ACR_OR_ECR_SERVICE_CONNECTION", registry)
+        .replaceAll("REPLACE_WITH_IMAGE_TAG", imageTag);
     }
     if (domain) content = content.replaceAll("REPLACE_WITH_DOMAIN", domain);
     const inputAliases = {
@@ -885,8 +889,30 @@ function materializeDeploymentInputs(files, deploymentInputs = {}) {
       const value = String(inputAliases[key].map((alias) => deploymentInputs[alias]).find(Boolean) ?? "").trim();
       if (value) content = content.replaceAll(`REPLACE_WITH_${key}`, value);
     }
+    content = materializeEcsInputs(content, deploymentInputs);
     return { ...file, content };
   });
+}
+
+function materializeEcsInputs(content, deploymentInputs = {}) {
+  const subnetIds = String(deploymentInputs.ecsSubnetIds ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  let resolved = content
+    .replaceAll("REPLACE_WITH_AWS_REGION", String(deploymentInputs.awsRegion ?? "").trim() || "REPLACE_WITH_AWS_REGION")
+    .replaceAll("REPLACE_WITH_ECS_CLUSTER_ARN", String(deploymentInputs.ecsClusterArn ?? "").trim() || "REPLACE_WITH_ECS_CLUSTER_ARN")
+    .replaceAll("REPLACE_WITH_ECS_TASK_EXECUTION_ROLE_ARN", String(deploymentInputs.ecsTaskExecutionRoleArn ?? "").trim() || "REPLACE_WITH_ECS_TASK_EXECUTION_ROLE_ARN")
+    .replaceAll("REPLACE_WITH_ECS_TASK_ROLE_ARN", String(deploymentInputs.ecsTaskRoleArn ?? "").trim() || "REPLACE_WITH_ECS_TASK_ROLE_ARN")
+    .replaceAll("REPLACE_WITH_TASK_DEFINITION", String(deploymentInputs.ecsTaskDefinition ?? "").trim() || "REPLACE_WITH_TASK_DEFINITION")
+    .replaceAll("REPLACE_WITH_ECS_SERVICE_SECURITY_GROUP_ID", String(deploymentInputs.ecsSecurityGroupId ?? "").trim() || "REPLACE_WITH_ECS_SERVICE_SECURITY_GROUP_ID")
+    .replaceAll("REPLACE_WITH_FRONTEND_TARGET_GROUP_ARN", String(deploymentInputs.ecsTargetGroupArn ?? "").trim() || "REPLACE_WITH_FRONTEND_TARGET_GROUP_ARN");
+
+  if (subnetIds[0]) resolved = resolved.replaceAll("REPLACE_WITH_PRIVATE_SUBNET_ID_1", subnetIds[0]);
+  if (subnetIds[1]) resolved = resolved.replaceAll("REPLACE_WITH_PRIVATE_SUBNET_ID_2", subnetIds[1]);
+
+  return resolved;
 }
 
 function validateDockerfile(fileMap) {
@@ -969,6 +995,70 @@ function validateKubernetesIngress(fileMap, deploymentInputs) {
   if (!hasDomain) return sandboxCheck("Ingress route", "warning", "Ingress host must be set before HTTPS exposure.", "kubectl apply --dry-run=client -f k8s/ingress.yaml");
   if (!hasService) return sandboxCheck("Ingress route", "failed", "Ingress must map to a service.", "kubectl apply --dry-run=client -f k8s/ingress.yaml");
   return sandboxCheck("Ingress route", "passed", "Ingress host and service mapping are ready for dry-run validation.", "kubectl apply --dry-run=client -f k8s/ingress.yaml");
+}
+
+function validateEcsTaskDefinition(fileMap) {
+  const file = fileMap.get("ecs/task-definition.json");
+  if (!file) return sandboxCheck("ECS task definition", "skipped", "ECS task definition was not generated.", "aws ecs register-task-definition --cli-input-json");
+
+  const parsed = parseJsonConfig(file.content);
+  if (!parsed.ok) return sandboxCheck("ECS task definition", "failed", "ECS task definition is not valid JSON.", "aws ecs register-task-definition --cli-input-json");
+
+  const task = parsed.value;
+  const content = file.content ?? "";
+  const placeholders = findPlaceholders(content);
+  const containers = Array.isArray(task.containerDefinitions) ? task.containerDefinitions : [];
+  const hasFargate = Array.isArray(task.requiresCompatibilities) && task.requiresCompatibilities.includes("FARGATE");
+  const hasAwsvpc = task.networkMode === "awsvpc";
+  const hasRoles = Boolean(task.executionRoleArn && task.taskRoleArn);
+  const hasImages = containers.length > 0 && containers.every((container) => typeof container.image === "string" && !container.image.includes("REPLACE_WITH"));
+  const hasPorts = containers.every((container) => Array.isArray(container.portMappings) && container.portMappings.some((port) => Number(port.containerPort) > 0));
+  const backend = containers.find((container) => String(container.name ?? "").includes("backend"));
+  const hasSecrets = !backend || (Array.isArray(backend.secrets) && ["DATABASE_URL", "TOKEN_SECRET", "CORS_ORIGIN"].every((name) => backend.secrets.some((secret) => secret.name === name)));
+
+  if (placeholders.length) return sandboxCheck("ECS task definition", "failed", `Resolve ECS placeholders: ${placeholders.join(", ")}.`, "aws ecs register-task-definition --cli-input-json ecs/task-definition.json");
+  if (!hasFargate || !hasAwsvpc) return sandboxCheck("ECS task definition", "failed", "Task definition must use FARGATE and awsvpc networking.", "aws ecs register-task-definition --cli-input-json ecs/task-definition.json");
+  if (!hasRoles) return sandboxCheck("ECS task definition", "failed", "Task execution role and task role are required.", "aws ecs register-task-definition --cli-input-json ecs/task-definition.json");
+  if (!hasImages || !hasPorts) return sandboxCheck("ECS task definition", "failed", "Each ECS container needs a resolved image and container port.", "aws ecs register-task-definition --cli-input-json ecs/task-definition.json");
+  if (!hasSecrets) return sandboxCheck("ECS task secrets", "warning", "Backend should receive DATABASE_URL, TOKEN_SECRET, and CORS_ORIGIN from Secrets Manager.", "aws ecs register-task-definition --cli-input-json ecs/task-definition.json");
+
+  return sandboxCheck("ECS task definition", "passed", "Fargate task definition has resolved images, roles, ports, and runtime secrets.", "aws ecs register-task-definition --cli-input-json ecs/task-definition.json");
+}
+
+function validateEcsService(fileMap) {
+  const file = fileMap.get("ecs/service.json");
+  if (!file) return sandboxCheck("ECS service", "skipped", "ECS service definition was not generated.", "aws ecs create-service --cli-input-json");
+
+  const parsed = parseJsonConfig(file.content);
+  if (!parsed.ok) return sandboxCheck("ECS service", "failed", "ECS service definition is not valid JSON.", "aws ecs create-service --cli-input-json");
+
+  const service = parsed.value;
+  const placeholders = findPlaceholders(file.content ?? "");
+  const subnets = service.networkConfiguration?.awsvpcConfiguration?.subnets ?? [];
+  const securityGroups = service.networkConfiguration?.awsvpcConfiguration?.securityGroups ?? [];
+  const loadBalancers = service.loadBalancers ?? [];
+  const hasCircuitBreaker = Boolean(service.deploymentConfiguration?.deploymentCircuitBreaker?.enable);
+
+  if (placeholders.length) return sandboxCheck("ECS service", "failed", `Resolve ECS service placeholders: ${placeholders.join(", ")}.`, "aws ecs create-service --cli-input-json ecs/service.json");
+  if (!service.cluster || !service.taskDefinition) return sandboxCheck("ECS service", "failed", "ECS service needs cluster and taskDefinition references.", "aws ecs create-service --cli-input-json ecs/service.json");
+  if (!Array.isArray(subnets) || subnets.length < 2) return sandboxCheck("ECS service networking", "warning", "Use at least two private subnets for production Fargate services.", "aws ecs create-service --cli-input-json ecs/service.json");
+  if (!Array.isArray(securityGroups) || !securityGroups.length) return sandboxCheck("ECS service", "failed", "ECS service needs a security group.", "aws ecs create-service --cli-input-json ecs/service.json");
+  if (!Array.isArray(loadBalancers) || !loadBalancers.length) return sandboxCheck("ECS service load balancer", "warning", "ECS service has no ALB target group mapping.", "aws ecs create-service --cli-input-json ecs/service.json");
+  if (!hasCircuitBreaker) return sandboxCheck("ECS deployment safety", "warning", "Enable ECS deployment circuit breaker rollback for production.", "aws ecs create-service --cli-input-json ecs/service.json");
+
+  return sandboxCheck("ECS service", "passed", "Fargate service has cluster, networking, security group, load balancer, and rollback controls.", "aws ecs create-service --cli-input-json ecs/service.json");
+}
+
+function parseJsonConfig(content) {
+  try {
+    return { ok: true, value: JSON.parse(content ?? "{}") };
+  } catch {
+    return { ok: false, value: null };
+  }
+}
+
+function findPlaceholders(content) {
+  return unique(String(content ?? "").match(/REPLACE_WITH_[A-Z0-9_]+/g) ?? []);
 }
 
 function validateAzurePipeline(fileMap) {
@@ -1183,6 +1273,24 @@ function generateMultiServiceFiles(stack) {
       purpose: "HTTPS ingress route for frontend and API traffic",
       status: "needs-input",
       content: generateMultiServiceIngress(stack)
+    },
+    {
+      path: "ecs/task-definition.json",
+      purpose: "AWS ECS Fargate task definition for frontend and backend containers",
+      status: "needs-input",
+      content: generateMultiServiceEcsTaskDefinition(stack)
+    },
+    {
+      path: "ecs/service.json",
+      purpose: "AWS ECS Fargate service definition with load balancer placeholders",
+      status: "needs-input",
+      content: generateMultiServiceEcsService(stack)
+    },
+    {
+      path: "ecs/deployment-notes.md",
+      purpose: "AWS ECS Fargate deployment handoff notes",
+      status: "needs-input",
+      content: generateEcsDeploymentNotes(stack)
     }
   ];
 }
@@ -1495,6 +1603,151 @@ function generateMultiServiceIngress(stack) {
       "                port:",
       `                  number: ${frontend.port}`
     ] : [])
+  ].join("\n");
+}
+
+function generateMultiServiceEcsTaskDefinition(stack) {
+  const backend = stack.services.find((service) => service.kind === "backend");
+  const frontend = stack.services.find((service) => service.kind === "frontend");
+  const containers = [];
+
+  if (backend) {
+    containers.push({
+      name: backend.serviceName,
+      image: "REPLACE_WITH_REGISTRY/sovereign-backend:REPLACE_WITH_IMAGE_TAG",
+      essential: true,
+      portMappings: [{ containerPort: Number(backend.port), protocol: "tcp" }],
+      environment: [
+        { name: "PORT", value: String(backend.port) },
+        { name: "APP_ENV", value: "production" },
+        { name: "APP_VERSION", value: "REPLACE_WITH_IMAGE_TAG" },
+        { name: "DB_SSL", value: "true" },
+        { name: "LOG_LEVEL", value: "info" }
+      ],
+      secrets: [
+        { name: "DATABASE_URL", valueFrom: "REPLACE_WITH_DATABASE_URL_SECRET_ARN" },
+        { name: "TOKEN_SECRET", valueFrom: "REPLACE_WITH_TOKEN_SECRET_ARN" },
+        { name: "CORS_ORIGIN", valueFrom: "REPLACE_WITH_CORS_ORIGIN_SECRET_ARN" }
+      ],
+      logConfiguration: {
+        logDriver: "awslogs",
+        options: {
+          "awslogs-group": "/ecs/sovereign-code/backend",
+          "awslogs-region": "REPLACE_WITH_AWS_REGION",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    });
+  }
+
+  if (frontend) {
+    containers.push({
+      name: frontend.serviceName,
+      image: "REPLACE_WITH_REGISTRY/sovereign-frontend:REPLACE_WITH_IMAGE_TAG",
+      essential: true,
+      portMappings: [{ containerPort: Number(frontend.port), protocol: "tcp" }],
+      dependsOn: backend ? [{ containerName: backend.serviceName, condition: "START" }] : [],
+      logConfiguration: {
+        logDriver: "awslogs",
+        options: {
+          "awslogs-group": "/ecs/sovereign-code/frontend",
+          "awslogs-region": "REPLACE_WITH_AWS_REGION",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    });
+  }
+
+  return JSON.stringify(
+    {
+      family: "sovereign-code",
+      networkMode: "awsvpc",
+      requiresCompatibilities: ["FARGATE"],
+      cpu: "512",
+      memory: "1024",
+      executionRoleArn: "REPLACE_WITH_ECS_TASK_EXECUTION_ROLE_ARN",
+      taskRoleArn: "REPLACE_WITH_ECS_TASK_ROLE_ARN",
+      containerDefinitions: containers
+    },
+    null,
+    2
+  );
+}
+
+function generateMultiServiceEcsService(stack) {
+  const frontend = stack.services.find((service) => service.kind === "frontend");
+
+  return JSON.stringify(
+    {
+      serviceName: "sovereign-code",
+      cluster: "REPLACE_WITH_ECS_CLUSTER_ARN",
+      taskDefinition: "REPLACE_WITH_TASK_DEFINITION",
+      desiredCount: 2,
+      launchType: "FARGATE",
+      platformVersion: "LATEST",
+      networkConfiguration: {
+        awsvpcConfiguration: {
+          subnets: ["REPLACE_WITH_PRIVATE_SUBNET_ID_1", "REPLACE_WITH_PRIVATE_SUBNET_ID_2"],
+          securityGroups: ["REPLACE_WITH_ECS_SERVICE_SECURITY_GROUP_ID"],
+          assignPublicIp: "DISABLED"
+        }
+      },
+      loadBalancers: frontend
+        ? [
+            {
+              targetGroupArn: "REPLACE_WITH_FRONTEND_TARGET_GROUP_ARN",
+              containerName: frontend.serviceName,
+              containerPort: Number(frontend.port)
+            }
+          ]
+        : [],
+      deploymentConfiguration: {
+        deploymentCircuitBreaker: {
+          enable: true,
+          rollback: true
+        },
+        maximumPercent: 200,
+        minimumHealthyPercent: 100
+      }
+    },
+    null,
+    2
+  );
+}
+
+function generateEcsDeploymentNotes(stack) {
+  const backend = stack.services.find((service) => service.kind === "backend");
+  const frontend = stack.services.find((service) => service.kind === "frontend");
+
+  return [
+    "# AWS ECS Fargate Deployment Notes",
+    "",
+    "Use these ECS files when Sovereign Code is deployed on ECS Fargate instead of Kubernetes.",
+    "",
+    "## Required AWS Values",
+    "- AWS region",
+    "- ECR backend image URL and immutable tag",
+    "- ECR frontend image URL and immutable tag",
+    "- ECS cluster ARN",
+    "- ECS task execution role ARN",
+    "- ECS task role ARN",
+    "- Private subnet IDs",
+    "- ECS service security group ID",
+    "- ALB target group ARN",
+    "- Secrets Manager ARNs for DATABASE_URL, TOKEN_SECRET, and CORS_ORIGIN",
+    "",
+    "## Service Map",
+    `- Backend: ${backend ? `${backend.serviceName} on ${backend.port}` : "not detected"}`,
+    `- Frontend: ${frontend ? `${frontend.serviceName} on ${frontend.port}` : "not detected"}`,
+    "",
+    "## Apply Order",
+    "1. Push backend and frontend images to ECR.",
+    "2. Replace placeholders in ecs/task-definition.json.",
+    "3. Register the task definition.",
+    "4. Replace placeholders in ecs/service.json.",
+    "5. Create or update the ECS service.",
+    "6. Confirm ALB target health.",
+    "7. Test the public domain and backend health route."
   ].join("\n");
 }
 

@@ -20,6 +20,7 @@ PipelineForge is a production-ready DevOps bootstrap and validation platform. It
 - Release bundle ZIP export with generated files, manifest, readiness report, and redacted deployment inputs
 - Backend project-history persistence for recent analyses
 - Static sandbox validation and security gate previews
+- ECS Fargate task/service validation for generated AWS deployments
 - AWS/Azure infra planner and manual deployment handoff checklist
 
 ## Run Locally

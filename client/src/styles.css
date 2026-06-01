@@ -610,62 +610,6 @@ code {
   color: #9fb3cd;
 }
 
-.cloud-handoff {
-  display: grid;
-  gap: 16px;
-}
-
-.handoff-summary {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.handoff-summary > div,
-.handoff-columns > div {
-  border: 1px solid rgba(126, 176, 255, 0.14);
-  border-radius: 8px;
-  background: rgba(4, 9, 19, 0.48);
-}
-
-.handoff-summary > div {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 14px;
-  color: #c4d5ec;
-}
-
-.handoff-summary svg {
-  color: #62a5ff;
-  flex: 0 0 auto;
-}
-
-.handoff-columns {
-  display: grid;
-  grid-template-columns: 0.85fr 1.15fr 1fr;
-  gap: 12px;
-}
-
-.handoff-columns > div {
-  display: grid;
-  align-content: start;
-  gap: 10px;
-  padding: 14px;
-}
-
-.handoff-columns strong {
-  color: #edf6ff;
-}
-
-.handoff-columns ul {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-  padding-left: 18px;
-  color: #9fb3cd;
-}
-
 .detail-list > div {
   display: grid;
   grid-template-columns: 140px 1fr;
@@ -988,7 +932,7 @@ code {
 
 .workflow-nav {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 8px;
   padding: 8px;
   border: 1px solid rgba(126, 176, 255, 0.18);
@@ -1154,6 +1098,36 @@ code {
   color: #a9c1df;
 }
 
+.file-filter-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.file-filter-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid rgba(126, 176, 255, 0.18);
+  border-radius: 999px;
+  background: rgba(4, 9, 19, 0.48);
+  color: #b9cbe4;
+  font-weight: 800;
+}
+
+.file-filter-tabs button.active {
+  color: #f7fbff;
+  border-color: rgba(93, 181, 255, 0.54);
+  background: rgba(35, 109, 255, 0.24);
+}
+
+.file-filter-tabs span {
+  color: #7fb2ff;
+}
+
 .deployment-inputs {
   display: grid;
   gap: 18px;
@@ -1173,6 +1147,13 @@ code {
 .input-grid span {
   color: #dceaff;
   font-weight: 700;
+}
+
+.input-grid em {
+  color: #7f94b2;
+  font-size: 0.78rem;
+  font-style: normal;
+  line-height: 1.35;
 }
 
 .input-grid input {
@@ -1498,8 +1479,6 @@ pre {
   .paired-grid,
   .pipeline-layout,
   .validation-command-grid,
-  .handoff-summary,
-  .handoff-columns,
   .evidence-list {
     grid-template-columns: 1fr;
   }

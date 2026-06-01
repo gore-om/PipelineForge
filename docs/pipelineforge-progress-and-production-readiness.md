@@ -123,6 +123,7 @@ For multi-service apps like Sovereign Code, it generates service-aware assets:
 - Kubernetes Ingress manifest
 - Jenkinsfile with separate image build stages
 - Azure Pipelines YAML with separate backend/frontend image build stages
+- ECS Fargate task definition, service definition, and deployment notes
 
 PipelineForge can now export a release bundle ZIP that contains:
 
@@ -180,6 +181,7 @@ PipelineForge has runtime/security gate surfaces for:
 - Image tag policy checks
 - Ingress TLS checks
 - Deployment lock checks
+- ECS Fargate task definition and service readiness checks
 
 Some runtime checks depend on local Docker, kubectl, Terraform, Trivy, and cloud credentials being available.
 
@@ -309,7 +311,7 @@ The production CI/CD path now uses Jenkins instead of Azure Pipelines:
 
 1. Expand generated AWS Terraform beyond starter files.
 2. Expand generated Azure Terraform beyond starter files.
-3. Add ECS task definition generation for user apps if ECS is selected.
+3. Expand ECS generation with optional multiple ECS services and blue/green deployment patterns.
 4. Add complete EKS manifests and ingress annotations for AWS Load Balancer Controller.
 5. Add AWS Secrets Manager or External Secrets integration.
 6. Add cost estimation for selected infra.

@@ -21,10 +21,11 @@ import {
   XCircle
 } from "lucide-react";
 import { type CSSProperties, type FormEvent, type ReactNode, useEffect, useState } from "react";
-import type { Analysis, AutoFixResult, CloudPlan, RuleStatus, RuntimeToolchain, SandboxResult, SandboxStatus } from "./types";
+import type { Analysis, AutoFixResult, RuleStatus, RuntimeToolchain, SandboxResult, SandboxStatus } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
-type WorkflowStep = "source" | "analyze" | "validate" | "generate" | "infra" | "pipeline";
+type WorkflowStep = "source" | "analyze" | "validate" | "generate" | "pipeline";
+type GeneratedFileFilter = "all" | "docker" | "jenkins" | "azure" | "kubernetes" | "ecs";
 type GeneratedFile = Analysis["generatedFiles"][number];
 type DeploymentInputs = {
   port: string;
@@ -36,6 +37,15 @@ type DeploymentInputs = {
   databaseUrl: string;
   tokenSecret: string;
   corsOrigin: string;
+  awsRegion: string;
+  imageTag: string;
+  ecsClusterArn: string;
+  ecsTaskExecutionRoleArn: string;
+  ecsTaskRoleArn: string;
+  ecsTaskDefinition: string;
+  ecsSubnetIds: string;
+  ecsSecurityGroupId: string;
+  ecsTargetGroupArn: string;
 };
 
 const emptyDeploymentInputs: DeploymentInputs = {
@@ -47,7 +57,16 @@ const emptyDeploymentInputs: DeploymentInputs = {
   domain: "",
   databaseUrl: "",
   tokenSecret: "",
-  corsOrigin: ""
+  corsOrigin: "",
+  awsRegion: "",
+  imageTag: "",
+  ecsClusterArn: "",
+  ecsTaskExecutionRoleArn: "",
+  ecsTaskRoleArn: "",
+  ecsTaskDefinition: "",
+  ecsSubnetIds: "",
+  ecsSecurityGroupId: "",
+  ecsTargetGroupArn: ""
 };
 
 function App() {
@@ -55,8 +74,8 @@ function App() {
   const [activeStep, setActiveStep] = useState<WorkflowStep>("source");
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [cloudProvider, setCloudProvider] = useState<"azure" | "aws">("azure");
   const [ciProvider, setCiProvider] = useState<"azure-pipelines" | "jenkins">("azure-pipelines");
+  const [generatedFileFilter, setGeneratedFileFilter] = useState<GeneratedFileFilter>("all");
   const [githubUrl, setGithubUrl] = useState("");
   const [zipFile, setZipFile] = useState<File | null>(null);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
@@ -468,9 +487,15 @@ function App() {
           />
         ) : null}
         {activeStep === "generate" ? (
-          <GenerationView analysis={analysis} generatedFiles={currentGeneratedFiles} isBundleLoading={isBundleLoading} onDownloadBundle={downloadReleaseBundle} />
+          <GenerationView
+            analysis={analysis}
+            filter={generatedFileFilter}
+            generatedFiles={currentGeneratedFiles}
+            isBundleLoading={isBundleLoading}
+            onDownloadBundle={downloadReleaseBundle}
+            onFilterChange={setGeneratedFileFilter}
+          />
         ) : null}
-        {activeStep === "infra" ? <InfraView analysis={analysis} cloudProvider={cloudProvider} onCloudProviderChange={setCloudProvider} /> : null}
         {activeStep === "pipeline" ? <PipelineView analysis={analysis} ciProvider={ciProvider} onCiProviderChange={setCiProvider} /> : null}
       </section>
     </main>
@@ -548,7 +573,6 @@ function WorkflowNav({ activeStep, analysis, onChange }: { activeStep: WorkflowS
     { id: "analyze", label: "Analyze", enabled: Boolean(analysis) },
     { id: "validate", label: "Validate", enabled: Boolean(analysis) },
     { id: "generate", label: "Generate", enabled: Boolean(analysis) },
-    { id: "infra", label: "Infra", enabled: Boolean(analysis) },
     { id: "pipeline", label: "Pipeline", enabled: Boolean(analysis) }
   ];
 
@@ -1033,7 +1057,7 @@ function RecommendationList({ recommendations, onNavigate }: { recommendations: 
 function recommendationTarget(item: string) {
   if (item.includes("Dockerfile") || item.includes(".dockerignore")) return "Review in Generate.";
   if (item.includes("start") || item.includes("build") || item.includes("package.json")) return "Fix in source repo, then re-analyze.";
-  if (item.includes("entrypoint")) return "Confirm before Pipeline and Infra.";
+  if (item.includes("entrypoint")) return "Confirm before Pipeline.";
   return "Review before sandbox validation.";
 }
 
@@ -1046,17 +1070,22 @@ function recommendationStep(item: string): WorkflowStep {
 
 function GenerationView({
   analysis,
+  filter,
   generatedFiles,
   isBundleLoading,
-  onDownloadBundle
+  onDownloadBundle,
+  onFilterChange
 }: {
   analysis: Analysis | null;
+  filter: GeneratedFileFilter;
   generatedFiles: GeneratedFile[];
   isBundleLoading: boolean;
   onDownloadBundle: () => void;
+  onFilterChange: (filter: GeneratedFileFilter) => void;
 }) {
   const readyCount = generatedFiles.filter((file) => file.status === "ready").length;
   const needsInputCount = generatedFiles.filter((file) => file.status === "needs-input").length;
+  const filteredFiles = filterGeneratedFiles(generatedFiles, filter);
 
   return (
     <div className="results-grid paired-grid">
@@ -1065,6 +1094,7 @@ function GenerationView({
           <Metric icon={<CheckCircle2 size={20} />} label="Ready files" value={`${readyCount}/${generatedFiles.length}`} />
           <Metric icon={<Settings2 size={20} />} label="Needs input" value={needsInputCount.toString()} />
         </div>
+        <GeneratedFileFilters active={filter} files={generatedFiles} onChange={onFilterChange} />
         <p className="panel-note">Resolve production inputs in Validate, then return here to preview and export deployable files.</p>
         <div className="release-bundle-card">
           <div>
@@ -1075,13 +1105,53 @@ function GenerationView({
             {isBundleLoading ? "Packaging..." : "Download bundle"}
           </button>
         </div>
-        <GeneratedFiles files={generatedFiles} />
+        <GeneratedFiles files={filteredFiles} />
       </FocusedPanel>
       <FocusedPanel kicker="Blueprint plan" title="Why these files were selected">
         <TemplateList analysis={analysis} />
       </FocusedPanel>
     </div>
   );
+}
+
+function GeneratedFileFilters({
+  active,
+  files,
+  onChange
+}: {
+  active: GeneratedFileFilter;
+  files: GeneratedFile[];
+  onChange: (filter: GeneratedFileFilter) => void;
+}) {
+  const filters: Array<{ id: GeneratedFileFilter; label: string }> = [
+    { id: "all", label: "All" },
+    { id: "docker", label: "Docker" },
+    { id: "jenkins", label: "Jenkins" },
+    { id: "azure", label: "Azure" },
+    { id: "kubernetes", label: "Kubernetes" },
+    { id: "ecs", label: "ECS" }
+  ];
+
+  return (
+    <div className="file-filter-tabs" aria-label="Generated file filters">
+      {filters.map((item) => (
+        <button className={active === item.id ? "active" : ""} key={item.id} type="button" onClick={() => onChange(item.id)}>
+          {item.label}
+          <span>{filterGeneratedFiles(files, item.id).length}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function filterGeneratedFiles(files: GeneratedFile[], filter: GeneratedFileFilter) {
+  if (filter === "all") return files;
+  if (filter === "docker") return files.filter((file) => file.path.toLowerCase().includes("docker") || file.path === "docker-compose.yml");
+  if (filter === "jenkins") return files.filter((file) => file.path === "Jenkinsfile");
+  if (filter === "azure") return files.filter((file) => file.path === "azure-pipelines.yml");
+  if (filter === "kubernetes") return files.filter((file) => file.path.startsWith("k8s/"));
+  if (filter === "ecs") return files.filter((file) => file.path.startsWith("ecs/"));
+  return files;
 }
 
 function DeploymentInputsPanel({
@@ -1100,10 +1170,12 @@ function DeploymentInputsPanel({
       <div className="input-grid">
         <label>
           <span>App port</span>
+          <em>Required for service/task port mapping.</em>
           <input value={inputs.port} placeholder="3000" onChange={(event) => updateInput("port", event.target.value)} />
         </label>
         <label>
           <span>Image registry</span>
+          <em>Required for ECS/K8s image references.</em>
           <input
             value={inputs.imageRegistry}
             placeholder="123456789.dkr.ecr.ap-south-1.amazonaws.com"
@@ -1112,31 +1184,83 @@ function DeploymentInputsPanel({
         </label>
         <label>
           <span>Build command</span>
+          <em>Optional when no build step exists.</em>
           <input value={inputs.buildCommand} placeholder="npm run build" onChange={(event) => updateInput("buildCommand", event.target.value)} />
         </label>
         <label>
           <span>Start command</span>
+          <em>Required unless Dockerfile already defines runtime.</em>
           <input value={inputs.startCommand} placeholder="npm run start" onChange={(event) => updateInput("startCommand", event.target.value)} />
         </label>
         <label>
           <span>Test command</span>
+          <em>Optional for today, recommended for CI quality.</em>
           <input value={inputs.testCommand} placeholder="npm test" onChange={(event) => updateInput("testCommand", event.target.value)} />
         </label>
         <label>
           <span>Public domain</span>
+          <em>Required for ingress/ALB public routing.</em>
           <input value={inputs.domain} placeholder="app.company.com" onChange={(event) => updateInput("domain", event.target.value)} />
         </label>
         <label>
           <span>Database URL</span>
+          <em>Required for Sovereign backend PostgreSQL.</em>
           <input value={inputs.databaseUrl} placeholder="postgres://user:pass@host:5432/db" onChange={(event) => updateInput("databaseUrl", event.target.value)} />
         </label>
         <label>
           <span>Token secret</span>
+          <em>Required. Create/store this as a secret.</em>
           <input value={inputs.tokenSecret} placeholder="secret-store reference" onChange={(event) => updateInput("tokenSecret", event.target.value)} />
         </label>
         <label>
           <span>CORS origin</span>
+          <em>Required. Use the frontend public URL.</em>
           <input value={inputs.corsOrigin} placeholder="https://app.company.com" onChange={(event) => updateInput("corsOrigin", event.target.value)} />
+        </label>
+        <label>
+          <span>AWS region</span>
+          <em>Required for ECS CloudWatch logs.</em>
+          <input value={inputs.awsRegion} placeholder="ap-south-1" onChange={(event) => updateInput("awsRegion", event.target.value)} />
+        </label>
+        <label>
+          <span>Image tag</span>
+          <em>Required for immutable ECS deploys.</em>
+          <input value={inputs.imageTag} placeholder="build-42 or git-sha" onChange={(event) => updateInput("imageTag", event.target.value)} />
+        </label>
+        <label>
+          <span>ECS cluster ARN</span>
+          <em>Required for ecs/service.json.</em>
+          <input value={inputs.ecsClusterArn} placeholder="arn:aws:ecs:..." onChange={(event) => updateInput("ecsClusterArn", event.target.value)} />
+        </label>
+        <label>
+          <span>Task execution role ARN</span>
+          <em>Required for ECR pull and logs.</em>
+          <input value={inputs.ecsTaskExecutionRoleArn} placeholder="arn:aws:iam::...:role/..." onChange={(event) => updateInput("ecsTaskExecutionRoleArn", event.target.value)} />
+        </label>
+        <label>
+          <span>Task role ARN</span>
+          <em>Required for app AWS permissions.</em>
+          <input value={inputs.ecsTaskRoleArn} placeholder="arn:aws:iam::...:role/..." onChange={(event) => updateInput("ecsTaskRoleArn", event.target.value)} />
+        </label>
+        <label>
+          <span>Task definition</span>
+          <em>Required after registering ECS task definition.</em>
+          <input value={inputs.ecsTaskDefinition} placeholder="sovereign-code:12 or task definition ARN" onChange={(event) => updateInput("ecsTaskDefinition", event.target.value)} />
+        </label>
+        <label>
+          <span>Private subnet IDs</span>
+          <em>Required for Fargate networking.</em>
+          <input value={inputs.ecsSubnetIds} placeholder="subnet-aaa, subnet-bbb" onChange={(event) => updateInput("ecsSubnetIds", event.target.value)} />
+        </label>
+        <label>
+          <span>ECS security group ID</span>
+          <em>Required for Fargate service traffic.</em>
+          <input value={inputs.ecsSecurityGroupId} placeholder="sg-0123456789" onChange={(event) => updateInput("ecsSecurityGroupId", event.target.value)} />
+        </label>
+        <label>
+          <span>ALB target group ARN</span>
+          <em>Required for ECS frontend service.</em>
+          <input value={inputs.ecsTargetGroupArn} placeholder="arn:aws:elasticloadbalancing:..." onChange={(event) => updateInput("ecsTargetGroupArn", event.target.value)} />
         </label>
       </div>
       <div className="resolution-list">
@@ -1146,6 +1270,12 @@ function DeploymentInputsPanel({
         <span className={inputs.databaseUrl ? "resolved" : ""}>Database secret</span>
         <span className={inputs.tokenSecret ? "resolved" : ""}>Token secret</span>
         <span className={inputs.corsOrigin ? "resolved" : ""}>CORS origin</span>
+        <span className={inputs.ecsClusterArn ? "resolved" : ""}>ECS cluster</span>
+        <span className={inputs.ecsTaskExecutionRoleArn ? "resolved" : ""}>Execution role</span>
+        <span className={inputs.ecsTaskDefinition ? "resolved" : ""}>Task definition</span>
+        <span className={inputs.ecsSubnetIds ? "resolved" : ""}>Private subnets</span>
+        <span className={inputs.ecsSecurityGroupId ? "resolved" : ""}>ECS security group</span>
+        <span className={inputs.ecsTargetGroupArn ? "resolved" : ""}>Target group</span>
         <span className={analysis?.stack.startCommand || inputs.startCommand ? "resolved" : ""}>Runtime start command</span>
       </div>
     </div>
@@ -1694,159 +1824,6 @@ function PromotionRunbook({ analysis, ciProvider }: { analysis: Analysis | null;
   );
 }
 
-function InfraView({
-  analysis,
-  cloudProvider,
-  onCloudProviderChange
-}: {
-  analysis: Analysis | null;
-  cloudProvider: "azure" | "aws";
-  onCloudProviderChange: (provider: "azure" | "aws") => void;
-}) {
-  if (!analysis) return <EmptyState />;
-
-  const plan = analysis.infraPlan[cloudProvider];
-
-  return (
-    <div className="results-grid paired-grid">
-      <FocusedPanel kicker="Infrastructure planner" title="Choose cloud target">
-        <div className="mode-switch cloud-switch" role="tablist" aria-label="Cloud provider">
-          <button className={cloudProvider === "azure" ? "active" : ""} onClick={() => onCloudProviderChange("azure")} type="button">
-            Azure
-          </button>
-          <button className={cloudProvider === "aws" ? "active" : ""} onClick={() => onCloudProviderChange("aws")} type="button">
-            AWS
-          </button>
-        </div>
-        <p>{plan.summary}</p>
-        <ResourceList plan={plan} />
-      </FocusedPanel>
-      <FocusedPanel kicker="Terraform preview" title={`${cloudProvider.toUpperCase()} starter files`}>
-        <GeneratedInfraFiles plan={plan} />
-      </FocusedPanel>
-      <FocusedPanel kicker={`${cloudProvider.toUpperCase()} handoff`} title="Manual cloud inputs" className="wide-panel">
-        <CloudHandoffChecklist analysis={analysis} cloudProvider={cloudProvider} />
-      </FocusedPanel>
-    </div>
-  );
-}
-
-function CloudHandoffChecklist({ analysis, cloudProvider }: { analysis: Analysis; cloudProvider: "azure" | "aws" }) {
-  const services = analysis.stack.services ?? [];
-  const backend = services.find((service) => service.kind === "backend");
-  const frontend = services.find((service) => service.kind === "frontend");
-  const requiredEnv = analysis.stack.requiredEnv ?? [];
-
-  const cloudInputs =
-    cloudProvider === "aws"
-      ? [
-          "AWS account ID",
-          "AWS region",
-          "ECR backend repository URL",
-          "ECR frontend repository URL",
-          "EKS cluster name and namespace",
-          "RDS PostgreSQL endpoint",
-          "ACM certificate ARN",
-          "Route 53 hosted zone or external DNS target",
-          "Azure Pipelines AWS service connection"
-        ]
-      : [
-          "Azure subscription ID",
-          "Resource group",
-          "ACR login server",
-          "AKS cluster name and namespace",
-          "Azure PostgreSQL endpoint",
-          "Key Vault name",
-          "TLS certificate or ingress host",
-          "Azure Pipelines service connection"
-        ];
-
-  const secretInputs = ["DATABASE_URL", "TOKEN_SECRET", "CORS_ORIGIN"].filter((item) => requiredEnv.includes(item) || item !== "DATABASE_URL");
-
-  return (
-    <div className="cloud-handoff">
-      <div className="handoff-summary">
-        <div>
-          <Cloud size={18} />
-          <span>{cloudProvider === "aws" ? "Recommended runtime: EKS + ECR + RDS PostgreSQL" : "Recommended runtime: AKS + ACR + Azure PostgreSQL"}</span>
-        </div>
-        <div>
-          <LockKeyhole size={18} />
-          <span>Cloud apply stays locked until registry, domain, secrets, and credentials are mapped.</span>
-        </div>
-      </div>
-
-      <div className="handoff-columns">
-        <div>
-          <strong>Service map</strong>
-          <ul>
-            <li>{backend ? `${backend.serviceName}: ${backend.port}` : "Backend service pending"}</li>
-            <li>{frontend ? `${frontend.serviceName}: ${frontend.port}` : "Frontend service pending"}</li>
-            <li>{analysis.stack.databases.includes("PostgreSQL") ? "PostgreSQL backing service required" : "No managed database detected"}</li>
-          </ul>
-        </div>
-        <div>
-          <strong>Cloud values to collect</strong>
-          <ul>
-            {cloudInputs.map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-          </ul>
-        </div>
-        <div>
-          <strong>Deployment secrets</strong>
-          <ul>
-            {secretInputs.map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-            <li>Public domain / ingress host</li>
-            <li>Immutable backend and frontend image tags</li>
-          </ul>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ResourceList({ plan }: { plan: CloudPlan }) {
-  return (
-    <div className="template-list">
-      {plan.resources.map((resource) => (
-        <div key={resource.name}>
-          <strong>{resource.name}</strong>
-          <em className={`review-badge ${resource.required ? "ready" : "needs-input"}`}>{resource.required ? "Required" : "Optional"}</em>
-          <span>{resource.purpose}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function GeneratedInfraFiles({ plan }: { plan: CloudPlan }) {
-  return (
-    <div className="generated-list">
-      {plan.terraformFiles.map((file) => (
-        <details key={file.path}>
-          <summary>
-            <strong>{file.path}</strong>
-            <span>Terraform starter file</span>
-            <em className={`review-badge ${file.status}`}>{formatFileStatus(file.status)}</em>
-          </summary>
-          <div className="file-actions">
-            <button className="ghost-button" type="button" onClick={() => downloadGeneratedFile(file.path, file.content)}>
-              Download
-            </button>
-            <button className="ghost-button" type="button" onClick={() => navigator.clipboard?.writeText(file.content)}>
-              Copy
-            </button>
-          </div>
-          <pre>{file.content}</pre>
-        </details>
-      ))}
-    </div>
-  );
-}
-
 function EmptyState() {
   return (
     <FocusedPanel kicker="Awaiting repository" title="Start with a source">
@@ -1992,7 +1969,16 @@ function defaultDeploymentInputs(analysis: Analysis): DeploymentInputs {
     domain: "",
     databaseUrl: "",
     tokenSecret: "",
-    corsOrigin: ""
+    corsOrigin: "",
+    awsRegion: "",
+    imageTag: "",
+    ecsClusterArn: "",
+    ecsTaskExecutionRoleArn: "",
+    ecsTaskRoleArn: "",
+    ecsTaskDefinition: "",
+    ecsSubnetIds: "",
+    ecsSecurityGroupId: "",
+    ecsTargetGroupArn: ""
   };
 }
 
@@ -2014,12 +2000,14 @@ function applyDeploymentInputs(file: GeneratedFile, inputs: DeploymentInputs) {
   const port = inputs.port.trim();
   const registry = inputs.imageRegistry.trim().replace(/\/$/, "");
   const domain = inputs.domain.trim();
+  const imageTag = inputs.imageTag.trim() || "latest";
   let content = file.content;
 
   if (registry) {
     content = content
       .replaceAll("REPLACE_WITH_REGISTRY", registry)
-      .replaceAll("REPLACE_WITH_ACR_OR_ECR_SERVICE_CONNECTION", registry);
+      .replaceAll("REPLACE_WITH_ACR_OR_ECR_SERVICE_CONNECTION", registry)
+      .replaceAll("REPLACE_WITH_IMAGE_TAG", imageTag);
   }
 
   if (domain) {
@@ -2037,6 +2025,8 @@ function applyDeploymentInputs(file: GeneratedFile, inputs: DeploymentInputs) {
   if (inputs.corsOrigin?.trim()) {
     content = content.replaceAll("REPLACE_WITH_CORS_ORIGIN", inputs.corsOrigin.trim());
   }
+
+  content = applyEcsDeploymentInputs(content, inputs);
 
   if (inputs.buildCommand.trim()) {
     content = content.replaceAll("echo Build command pending", inputs.buildCommand.trim());
@@ -2067,6 +2057,27 @@ function applyDeploymentInputs(file: GeneratedFile, inputs: DeploymentInputs) {
   return content;
 }
 
+function applyEcsDeploymentInputs(content: string, inputs: DeploymentInputs) {
+  const subnetIds = inputs.ecsSubnetIds
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  let resolved = content
+    .replaceAll("REPLACE_WITH_AWS_REGION", inputs.awsRegion.trim() || "REPLACE_WITH_AWS_REGION")
+    .replaceAll("REPLACE_WITH_ECS_CLUSTER_ARN", inputs.ecsClusterArn.trim() || "REPLACE_WITH_ECS_CLUSTER_ARN")
+    .replaceAll("REPLACE_WITH_ECS_TASK_EXECUTION_ROLE_ARN", inputs.ecsTaskExecutionRoleArn.trim() || "REPLACE_WITH_ECS_TASK_EXECUTION_ROLE_ARN")
+    .replaceAll("REPLACE_WITH_ECS_TASK_ROLE_ARN", inputs.ecsTaskRoleArn.trim() || "REPLACE_WITH_ECS_TASK_ROLE_ARN")
+    .replaceAll("REPLACE_WITH_TASK_DEFINITION", inputs.ecsTaskDefinition.trim() || "REPLACE_WITH_TASK_DEFINITION")
+    .replaceAll("REPLACE_WITH_ECS_SERVICE_SECURITY_GROUP_ID", inputs.ecsSecurityGroupId.trim() || "REPLACE_WITH_ECS_SERVICE_SECURITY_GROUP_ID")
+    .replaceAll("REPLACE_WITH_FRONTEND_TARGET_GROUP_ARN", inputs.ecsTargetGroupArn.trim() || "REPLACE_WITH_FRONTEND_TARGET_GROUP_ARN");
+
+  if (subnetIds[0]) resolved = resolved.replaceAll("REPLACE_WITH_PRIVATE_SUBNET_ID_1", subnetIds[0]);
+  if (subnetIds[1]) resolved = resolved.replaceAll("REPLACE_WITH_PRIVATE_SUBNET_ID_2", subnetIds[1]);
+
+  return resolved;
+}
+
 function resolveFileStatus(file: GeneratedFile, inputs: DeploymentInputs, analysis: Analysis): GeneratedFile["status"] {
   if (file.status === "blocked") return "blocked";
 
@@ -2079,6 +2090,17 @@ function resolveFileStatus(file: GeneratedFile, inputs: DeploymentInputs, analys
   const hasDatabaseUrl = Boolean(inputs.databaseUrl?.trim());
   const hasTokenSecret = Boolean(inputs.tokenSecret?.trim());
   const hasCorsOrigin = Boolean(inputs.corsOrigin?.trim());
+  const hasEcsCore = Boolean(
+    inputs.awsRegion.trim() &&
+      inputs.imageTag.trim() &&
+      inputs.ecsClusterArn.trim() &&
+      inputs.ecsTaskExecutionRoleArn.trim() &&
+      inputs.ecsTaskRoleArn.trim() &&
+      inputs.ecsTaskDefinition.trim() &&
+      inputs.ecsSubnetIds.trim() &&
+      inputs.ecsSecurityGroupId.trim() &&
+      inputs.ecsTargetGroupArn.trim()
+  );
   const isMultiService = Boolean(analysis.stack.services?.length && analysis.stack.services.length > 1);
 
   if (file.path.toLowerCase().endsWith("dockerfile")) return hasPackageManifest || isMultiService || (hasPort && hasStart) ? "ready" : file.status;
@@ -2088,6 +2110,9 @@ function resolveFileStatus(file: GeneratedFile, inputs: DeploymentInputs, analys
   if (file.path === "k8s/secret.yaml") return hasDatabaseUrl && hasTokenSecret && hasCorsOrigin ? "ready" : file.status;
   if (file.path === "k8s/deployment.yaml") return isMultiService ? hasRegistry && hasDatabaseUrl && hasTokenSecret ? "ready" : file.status : hasPort && hasStart && hasRegistry ? "ready" : file.status;
   if (file.path === "k8s/ingress.yaml") return hasDomain ? "ready" : file.status;
+  if (file.path === "ecs/task-definition.json") return hasRegistry && hasDatabaseUrl && hasTokenSecret && hasCorsOrigin && hasEcsCore ? "ready" : file.status;
+  if (file.path === "ecs/service.json") return hasRegistry && hasEcsCore ? "ready" : file.status;
+  if (file.path === "ecs/deployment-notes.md") return hasRegistry && hasEcsCore ? "ready" : file.status;
 
   return file.status;
 }
